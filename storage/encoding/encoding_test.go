@@ -1,16 +1,18 @@
-package storage
+package encoding
 
 import (
 	"testing"
+
+	"github.com/seankohjs/neo4g/graph"
 )
 
 func TestEncodeDecodeNode(t *testing.T) {
-	node := &Node{
+	node := &graph.Node{
 		ID:     42,
 		Labels: []string{"Person", "Employee"},
-		Properties: map[string]Value{
-			"name": StringValue("Alice"),
-			"age":  IntValue(30),
+		Properties: map[string]graph.Value{
+			"name": graph.StringValue("Alice"),
+			"age":  graph.IntValue(30),
 		},
 	}
 
@@ -38,10 +40,10 @@ func TestEncodeDecodeNode(t *testing.T) {
 }
 
 func TestEncodeDecodeNodeNoLabels(t *testing.T) {
-	node := &Node{
+	node := &graph.Node{
 		ID:         1,
 		Labels:     nil,
-		Properties: map[string]Value{},
+		Properties: map[string]graph.Value{},
 	}
 
 	data := EncodeNode(node)
@@ -58,13 +60,13 @@ func TestEncodeDecodeNodeNoLabels(t *testing.T) {
 }
 
 func TestEncodeDecodeEdge(t *testing.T) {
-	edge := &Edge{
+	edge := &graph.Edge{
 		ID:       7,
 		Type:     "KNOWS",
 		SourceID: 1,
 		TargetID: 2,
-		Properties: map[string]Value{
-			"since": IntValue(2020),
+		Properties: map[string]graph.Value{
+			"since": graph.IntValue(2020),
 		},
 	}
 
@@ -89,12 +91,12 @@ func TestEncodeDecodeEdge(t *testing.T) {
 }
 
 func TestEncodeDecodeEdgeNoProps(t *testing.T) {
-	edge := &Edge{
+	edge := &graph.Edge{
 		ID:         1,
 		Type:       "LIKES",
 		SourceID:   10,
 		TargetID:   20,
-		Properties: map[string]Value{},
+		Properties: map[string]graph.Value{},
 	}
 
 	data := EncodeEdge(edge)
@@ -122,32 +124,32 @@ func TestDecodeEdgeTruncated(t *testing.T) {
 }
 
 func TestValueTypes(t *testing.T) {
-	iv := IntValue(-42)
+	iv := graph.IntValue(-42)
 	if iv.AsInt() != -42 {
 		t.Errorf("IntValue: expected -42, got %d", iv.AsInt())
 	}
 
-	sv := StringValue("hello")
+	sv := graph.StringValue("hello")
 	if sv.AsString() != "hello" {
 		t.Errorf("StringValue: expected 'hello', got %q", sv.AsString())
 	}
 
-	bv := BoolValue(true)
+	bv := graph.BoolValue(true)
 	if !bv.AsBool() {
 		t.Error("BoolValue(true): expected true")
 	}
 
-	bv2 := BoolValue(false)
+	bv2 := graph.BoolValue(false)
 	if bv2.AsBool() {
 		t.Error("BoolValue(false): expected false")
 	}
 
-	fv := FloatValue(3.14)
+	fv := graph.FloatValue(3.14)
 	if fv.AsFloat() != 3.14 {
 		t.Errorf("FloatValue: expected 3.14, got %f", fv.AsFloat())
 	}
 
-	byv := BytesValue([]byte{0xDE, 0xAD})
+	byv := graph.BytesValue([]byte{0xDE, 0xAD})
 	if len(byv.AsBytes()) != 2 || byv.AsBytes()[0] != 0xDE {
 		t.Errorf("BytesValue: unexpected data")
 	}

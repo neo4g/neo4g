@@ -1,34 +1,38 @@
-package storage
+package record
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/seankohjs/neo4g/graph"
+	"github.com/seankohjs/neo4g/storage/disk"
+	"github.com/seankohjs/neo4g/storage/pool"
 )
 
-func newTestRecordManager(t *testing.T) *RecordManager {
+func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	dm, err := OpenDiskManager(path)
+	dm, err := disk.Open(path)
 	if err != nil {
-		t.Fatalf("OpenDiskManager: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { dm.Close() })
 
-	bp := NewBufferPool(dm, 100)
-	rm, err := NewRecordManager(bp, dm)
+	bp := pool.New(dm, 100)
+	rm, err := NewManager(bp, dm)
 	if err != nil {
-		t.Fatalf("NewRecordManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	return rm
 }
 
 func TestCreateAndGetNode(t *testing.T) {
-	rm := newTestRecordManager(t)
+	rm := newTestManager(t)
 
 	id, err := rm.CreateNode(
 		[]string{"Person"},
-		map[string]Value{"name": StringValue("Alice"), "age": IntValue(30)},
+		map[string]graph.Value{"name": graph.StringValue("Alice"), "age": graph.IntValue(30)},
 	)
 	if err != nil {
 		t.Fatalf("CreateNode: %v", err)
@@ -53,7 +57,7 @@ func TestCreateAndGetNode(t *testing.T) {
 }
 
 func TestGetNodeNotFound(t *testing.T) {
-	rm := newTestRecordManager(t)
+	rm := newTestManager(t)
 	_, err := rm.GetNode(999)
 	if err == nil {
 		t.Fatal("expected error for non-existent node")
@@ -61,11 +65,11 @@ func TestGetNodeNotFound(t *testing.T) {
 }
 
 func TestUpdateNode(t *testing.T) {
-	rm := newTestRecordManager(t)
+	rm := newTestManager(t)
 
-	id, _ := rm.CreateNode([]string{"Person"}, map[string]Value{"name": StringValue("Bob")})
+	id, _ := rm.CreateNode([]string{"Person"}, map[string]graph.Value{"name": graph.StringValue("Bob")})
 
-	err := rm.UpdateNode(id, map[string]Value{"name": StringValue("Robert"), "age": IntValue(25)})
+	err := rm.UpdateNode(id, map[string]graph.Value{"name": graph.StringValue("Robert"), "age": graph.IntValue(25)})
 	if err != nil {
 		t.Fatalf("UpdateNode: %v", err)
 	}
@@ -80,8 +84,8 @@ func TestUpdateNode(t *testing.T) {
 }
 
 func TestDeleteNode(t *testing.T) {
-	rm := newTestRecordManager(t)
-	id, _ := rm.CreateNode([]string{"Temp"}, map[string]Value{})
+	rm := newTestManager(t)
+	id, _ := rm.CreateNode([]string{"Temp"}, map[string]graph.Value{})
 
 	if err := rm.DeleteNode(id); err != nil {
 		t.Fatalf("DeleteNode: %v", err)
@@ -94,10 +98,10 @@ func TestDeleteNode(t *testing.T) {
 }
 
 func TestDeleteNodeWithEdges(t *testing.T) {
-	rm := newTestRecordManager(t)
-	n1, _ := rm.CreateNode([]string{"A"}, map[string]Value{})
-	n2, _ := rm.CreateNode([]string{"B"}, map[string]Value{})
-	rm.CreateEdge("LINK", n1, n2, map[string]Value{})
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
+	n2, _ := rm.CreateNode([]string{"B"}, map[string]graph.Value{})
+	rm.CreateEdge("LINK", n1, n2, map[string]graph.Value{})
 
 	err := rm.DeleteNode(n1)
 	if err == nil {
@@ -106,11 +110,11 @@ func TestDeleteNodeWithEdges(t *testing.T) {
 }
 
 func TestCreateAndGetEdge(t *testing.T) {
-	rm := newTestRecordManager(t)
-	n1, _ := rm.CreateNode([]string{"Person"}, map[string]Value{"name": StringValue("Alice")})
-	n2, _ := rm.CreateNode([]string{"Person"}, map[string]Value{"name": StringValue("Bob")})
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"Person"}, map[string]graph.Value{"name": graph.StringValue("Alice")})
+	n2, _ := rm.CreateNode([]string{"Person"}, map[string]graph.Value{"name": graph.StringValue("Bob")})
 
-	eid, err := rm.CreateEdge("KNOWS", n1, n2, map[string]Value{"since": IntValue(2020)})
+	eid, err := rm.CreateEdge("KNOWS", n1, n2, map[string]graph.Value{"since": graph.IntValue(2020)})
 	if err != nil {
 		t.Fatalf("CreateEdge: %v", err)
 	}
@@ -131,32 +135,31 @@ func TestCreateAndGetEdge(t *testing.T) {
 }
 
 func TestCreateEdgeMissingNode(t *testing.T) {
-	rm := newTestRecordManager(t)
-	n1, _ := rm.CreateNode([]string{"A"}, map[string]Value{})
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
 
-	_, err := rm.CreateEdge("LINK", n1, 999, map[string]Value{})
+	_, err := rm.CreateEdge("LINK", n1, 999, map[string]graph.Value{})
 	if err == nil {
 		t.Fatal("expected error for missing target node")
 	}
 
-	_, err = rm.CreateEdge("LINK", 999, n1, map[string]Value{})
+	_, err = rm.CreateEdge("LINK", 999, n1, map[string]graph.Value{})
 	if err == nil {
 		t.Fatal("expected error for missing source node")
 	}
 }
 
 func TestGetEdges(t *testing.T) {
-	rm := newTestRecordManager(t)
-	n1, _ := rm.CreateNode([]string{"A"}, map[string]Value{})
-	n2, _ := rm.CreateNode([]string{"B"}, map[string]Value{})
-	n3, _ := rm.CreateNode([]string{"C"}, map[string]Value{})
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
+	n2, _ := rm.CreateNode([]string{"B"}, map[string]graph.Value{})
+	n3, _ := rm.CreateNode([]string{"C"}, map[string]graph.Value{})
 
-	rm.CreateEdge("R1", n1, n2, map[string]Value{})
-	rm.CreateEdge("R2", n1, n3, map[string]Value{})
-	rm.CreateEdge("R3", n2, n1, map[string]Value{})
+	rm.CreateEdge("R1", n1, n2, map[string]graph.Value{})
+	rm.CreateEdge("R2", n1, n3, map[string]graph.Value{})
+	rm.CreateEdge("R3", n2, n1, map[string]graph.Value{})
 
-	// Outgoing from n1.
-	out, err := rm.GetEdges(n1, Outgoing)
+	out, err := rm.GetEdges(n1, graph.Outgoing)
 	if err != nil {
 		t.Fatalf("GetEdges outgoing: %v", err)
 	}
@@ -164,8 +167,7 @@ func TestGetEdges(t *testing.T) {
 		t.Errorf("expected 2 outgoing edges, got %d", len(out))
 	}
 
-	// Incoming to n1.
-	in, err := rm.GetEdges(n1, Incoming)
+	in, err := rm.GetEdges(n1, graph.Incoming)
 	if err != nil {
 		t.Fatalf("GetEdges incoming: %v", err)
 	}
@@ -173,8 +175,7 @@ func TestGetEdges(t *testing.T) {
 		t.Errorf("expected 1 incoming edge, got %d", len(in))
 	}
 
-	// Both directions for n1.
-	both, err := rm.GetEdges(n1, Both)
+	both, err := rm.GetEdges(n1, graph.Both)
 	if err != nil {
 		t.Fatalf("GetEdges both: %v", err)
 	}
@@ -184,10 +185,10 @@ func TestGetEdges(t *testing.T) {
 }
 
 func TestDeleteEdge(t *testing.T) {
-	rm := newTestRecordManager(t)
-	n1, _ := rm.CreateNode([]string{"A"}, map[string]Value{})
-	n2, _ := rm.CreateNode([]string{"B"}, map[string]Value{})
-	eid, _ := rm.CreateEdge("LINK", n1, n2, map[string]Value{})
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
+	n2, _ := rm.CreateNode([]string{"B"}, map[string]graph.Value{})
+	eid, _ := rm.CreateEdge("LINK", n1, n2, map[string]graph.Value{})
 
 	if err := rm.DeleteEdge(eid); err != nil {
 		t.Fatalf("DeleteEdge: %v", err)
@@ -198,27 +199,24 @@ func TestDeleteEdge(t *testing.T) {
 		t.Fatal("expected error getting deleted edge")
 	}
 
-	// Adjacency should be cleaned up.
-	out, _ := rm.GetEdges(n1, Outgoing)
+	out, _ := rm.GetEdges(n1, graph.Outgoing)
 	if len(out) != 0 {
 		t.Errorf("expected 0 outgoing edges after delete, got %d", len(out))
 	}
 
-	// Node should be deletable now.
 	if err := rm.DeleteNode(n1); err != nil {
 		t.Fatalf("DeleteNode after edge removal: %v", err)
 	}
 }
 
 func TestManyNodes(t *testing.T) {
-	rm := newTestRecordManager(t)
+	rm := newTestManager(t)
 
-	// Insert enough nodes to force page chain growth.
-	ids := make([]NodeID, 200)
+	ids := make([]graph.NodeID, 200)
 	for i := range 200 {
 		id, err := rm.CreateNode(
 			[]string{"Node"},
-			map[string]Value{"index": IntValue(int64(i))},
+			map[string]graph.Value{"index": graph.IntValue(int64(i))},
 		)
 		if err != nil {
 			t.Fatalf("CreateNode %d: %v", i, err)
@@ -226,7 +224,6 @@ func TestManyNodes(t *testing.T) {
 		ids[i] = id
 	}
 
-	// Verify all are readable.
 	for i, id := range ids {
 		node, err := rm.GetNode(id)
 		if err != nil {
@@ -239,37 +236,34 @@ func TestManyNodes(t *testing.T) {
 }
 
 func TestManyEdges(t *testing.T) {
-	rm := newTestRecordManager(t)
+	rm := newTestManager(t)
 
-	// Create a chain of nodes with edges.
-	nodes := make([]NodeID, 50)
+	nodes := make([]graph.NodeID, 50)
 	for i := range 50 {
-		id, _ := rm.CreateNode([]string{"N"}, map[string]Value{"i": IntValue(int64(i))})
+		id, _ := rm.CreateNode([]string{"N"}, map[string]graph.Value{"i": graph.IntValue(int64(i))})
 		nodes[i] = id
 	}
 
 	for i := 0; i < 49; i++ {
-		_, err := rm.CreateEdge("NEXT", nodes[i], nodes[i+1], map[string]Value{
-			"order": IntValue(int64(i)),
+		_, err := rm.CreateEdge("NEXT", nodes[i], nodes[i+1], map[string]graph.Value{
+			"order": graph.IntValue(int64(i)),
 		})
 		if err != nil {
 			t.Fatalf("CreateEdge %d→%d: %v", nodes[i], nodes[i+1], err)
 		}
 	}
 
-	// Middle node should have 1 in + 1 out.
 	mid := nodes[25]
-	out, _ := rm.GetEdges(mid, Outgoing)
-	in, _ := rm.GetEdges(mid, Incoming)
+	out, _ := rm.GetEdges(mid, graph.Outgoing)
+	in, _ := rm.GetEdges(mid, graph.Incoming)
 	if len(out) != 1 || len(in) != 1 {
 		t.Errorf("node %d: expected 1 out + 1 in, got %d out + %d in", mid, len(out), len(in))
 	}
 
-	// First node: 1 out, 0 in. Last node: 0 out, 1 in.
-	firstOut, _ := rm.GetEdges(nodes[0], Outgoing)
-	firstIn, _ := rm.GetEdges(nodes[0], Incoming)
-	lastOut, _ := rm.GetEdges(nodes[49], Outgoing)
-	lastIn, _ := rm.GetEdges(nodes[49], Incoming)
+	firstOut, _ := rm.GetEdges(nodes[0], graph.Outgoing)
+	firstIn, _ := rm.GetEdges(nodes[0], graph.Incoming)
+	lastOut, _ := rm.GetEdges(nodes[49], graph.Outgoing)
+	lastIn, _ := rm.GetEdges(nodes[49], graph.Incoming)
 
 	if len(firstOut) != 1 || len(firstIn) != 0 {
 		t.Errorf("first node: expected 1/0, got %d/%d", len(firstOut), len(firstIn))

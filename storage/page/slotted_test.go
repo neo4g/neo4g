@@ -1,13 +1,15 @@
-package storage
+package page
 
 import (
 	"bytes"
 	"testing"
+
+	"github.com/seankohjs/neo4g/storage"
 )
 
 func newTestSlottedPage() *SlottedPage {
-	var p Page
-	return InitSlottedPage(&p, 1, PageTypeNode)
+	var p storage.Page
+	return Init(&p, 1, storage.PageTypeNode)
 }
 
 func TestInitSlottedPage(t *testing.T) {
@@ -16,17 +18,16 @@ func TestInitSlottedPage(t *testing.T) {
 	if sp.GetPageID() != 1 {
 		t.Errorf("expected page ID 1, got %d", sp.GetPageID())
 	}
-	if sp.GetPageType() != PageTypeNode {
-		t.Errorf("expected page type %d, got %d", PageTypeNode, sp.GetPageType())
+	if sp.GetPageType() != storage.PageTypeNode {
+		t.Errorf("expected page type %d, got %d", storage.PageTypeNode, sp.GetPageType())
 	}
 	if sp.SlotCount() != 0 {
 		t.Errorf("expected 0 slots, got %d", sp.SlotCount())
 	}
-	if sp.GetNextPage() != InvalidPageID {
-		t.Errorf("expected next page %d, got %d", InvalidPageID, sp.GetNextPage())
+	if sp.GetNextPage() != storage.InvalidPageID {
+		t.Errorf("expected next page %d, got %d", storage.InvalidPageID, sp.GetNextPage())
 	}
-	// Free space = PageSize - header
-	expected := uint16(PageSize - pHeaderSize)
+	expected := uint16(storage.PageSize - HeaderSize)
 	if sp.FreeSpace() != expected {
 		t.Errorf("expected free space %d, got %d", expected, sp.FreeSpace())
 	}
@@ -91,7 +92,6 @@ func TestDeleteRecord(t *testing.T) {
 		t.Fatalf("DeleteRecord: %v", err)
 	}
 
-	// Deleted slot returns nil.
 	got, err := sp.GetRecord(1)
 	if err != nil {
 		t.Fatalf("GetRecord deleted: %v", err)
@@ -104,7 +104,6 @@ func TestDeleteRecord(t *testing.T) {
 		t.Error("expected slot 1 to be deleted")
 	}
 
-	// Other records still accessible.
 	r0, _ := sp.GetRecord(0)
 	r2, _ := sp.GetRecord(2)
 	if string(r0) != "keep" || string(r2) != "keep too" {
@@ -174,19 +173,16 @@ func TestCompact(t *testing.T) {
 	freeBeforeDelete := sp.FreeSpace()
 	sp.DeleteRecord(1)
 
-	// Free space doesn't change on delete (tombstone only).
 	if sp.FreeSpace() != freeBeforeDelete {
 		t.Error("free space should not change on delete")
 	}
 
 	sp.Compact()
 
-	// After compaction, space from deleted record should be reclaimed.
 	if sp.FreeSpace() <= freeBeforeDelete {
 		t.Error("free space should increase after compaction")
 	}
 
-	// Live records still readable.
 	r0, _ := sp.GetRecord(0)
 	r2, _ := sp.GetRecord(2)
 	if string(r0) != "keep-0" {
@@ -196,7 +192,6 @@ func TestCompact(t *testing.T) {
 		t.Errorf("slot 2: expected 'keep-2', got %q", r2)
 	}
 
-	// Deleted slot still returns nil.
 	r1, _ := sp.GetRecord(1)
 	if r1 != nil {
 		t.Errorf("slot 1: expected nil after compact, got %q", r1)
@@ -214,7 +209,6 @@ func TestGetRecordOutOfRange(t *testing.T) {
 func TestPageFull(t *testing.T) {
 	sp := newTestSlottedPage()
 
-	// Fill the page with records until it's full.
 	record := make([]byte, 100)
 	count := 0
 	for {
@@ -229,7 +223,6 @@ func TestPageFull(t *testing.T) {
 		t.Fatal("should be able to insert at least one record")
 	}
 
-	// Verify all inserted records are readable.
 	for i := 0; i < count; i++ {
 		got, err := sp.GetRecord(uint16(i))
 		if err != nil {

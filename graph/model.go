@@ -1,16 +1,4 @@
-package storage
-
-// node.go defines the Node type and its associated data structures.
-//
-// A Node represents a vertex in the property graph. Each node has:
-//   - A unique NodeID (monotonically increasing, assigned by the disk manager)
-//   - Zero or more labels (strings like "Person", "Company")
-//   - Zero or more properties (key-value pairs with typed values)
-//
-// Nodes are stored in node-typed slotted pages and indexed by NodeID via B+Tree.
-// Adjacency (which edges connect to this node) is tracked in a separate
-// adjacency index, not stored inline on the node record — this keeps node
-// records compact and avoids expensive updates when edges are added/removed.
+package graph
 
 import (
 	"encoding/binary"
@@ -27,6 +15,28 @@ type Node struct {
 	Labels     []string
 	Properties map[string]Value
 }
+
+// EdgeID uniquely identifies an edge in the database.
+// IDs start at 1; 0 is reserved as a sentinel meaning "no edge".
+type EdgeID uint64
+
+// Edge represents a directed relationship between two nodes in the property graph.
+type Edge struct {
+	ID         EdgeID
+	Type       string
+	SourceID   NodeID
+	TargetID   NodeID
+	Properties map[string]Value
+}
+
+// Direction specifies which edges to retrieve relative to a node.
+type Direction int
+
+const (
+	Outgoing Direction = iota
+	Incoming
+	Both
+)
 
 // ValueType identifies the type of data stored in a Value.
 type ValueType byte
@@ -50,26 +60,22 @@ type Value struct {
 
 // --- Value constructors ---
 
-// IntValue creates a Value holding a 64-bit signed integer.
 func IntValue(v int64) Value {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, uint64(v))
 	return Value{Type: ValueTypeInt, Data: buf}
 }
 
-// FloatValue creates a Value holding a 64-bit IEEE 754 float.
 func FloatValue(v float64) Value {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, math.Float64bits(v))
 	return Value{Type: ValueTypeFloat, Data: buf}
 }
 
-// StringValue creates a Value holding a UTF-8 string.
 func StringValue(v string) Value {
 	return Value{Type: ValueTypeString, Data: []byte(v)}
 }
 
-// BoolValue creates a Value holding a boolean.
 func BoolValue(v bool) Value {
 	b := byte(0)
 	if v {
@@ -78,21 +84,18 @@ func BoolValue(v bool) Value {
 	return Value{Type: ValueTypeBool, Data: []byte{b}}
 }
 
-// BytesValue creates a Value holding arbitrary bytes.
 func BytesValue(v []byte) Value {
 	cp := make([]byte, len(v))
 	copy(cp, v)
 	return Value{Type: ValueTypeBytes, Data: cp}
 }
 
-// NullValue creates a Value representing null/no value.
 func NullValue() Value {
 	return Value{Type: ValueTypeNull, Data: nil}
 }
 
 // --- Value accessors ---
 
-// AsInt returns the value as int64. Panics if the type is not ValueTypeInt.
 func (v Value) AsInt() int64 {
 	if v.Type != ValueTypeInt {
 		panic("Value.AsInt called on non-int value")
@@ -100,7 +103,6 @@ func (v Value) AsInt() int64 {
 	return int64(binary.LittleEndian.Uint64(v.Data))
 }
 
-// AsFloat returns the value as float64. Panics if type is not ValueTypeFloat.
 func (v Value) AsFloat() float64 {
 	if v.Type != ValueTypeFloat {
 		panic("Value.AsFloat called on non-float value")
@@ -108,7 +110,6 @@ func (v Value) AsFloat() float64 {
 	return math.Float64frombits(binary.LittleEndian.Uint64(v.Data))
 }
 
-// AsString returns the value as a string. Panics if type is not ValueTypeString.
 func (v Value) AsString() string {
 	if v.Type != ValueTypeString {
 		panic("Value.AsString called on non-string value")
@@ -116,7 +117,6 @@ func (v Value) AsString() string {
 	return string(v.Data)
 }
 
-// AsBool returns the value as bool. Panics if type is not ValueTypeBool.
 func (v Value) AsBool() bool {
 	if v.Type != ValueTypeBool {
 		panic("Value.AsBool called on non-bool value")
@@ -124,7 +124,6 @@ func (v Value) AsBool() bool {
 	return v.Data[0] != 0
 }
 
-// AsBytes returns the value as a byte slice. Panics if type is not ValueTypeBytes.
 func (v Value) AsBytes() []byte {
 	if v.Type != ValueTypeBytes {
 		panic("Value.AsBytes called on non-bytes value")

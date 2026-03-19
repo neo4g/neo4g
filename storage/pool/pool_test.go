@@ -1,31 +1,34 @@
-package storage
+package pool
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/seankohjs/neo4g/storage"
+	"github.com/seankohjs/neo4g/storage/disk"
 )
 
-func newTestBufferPool(t *testing.T, poolSize int) (*BufferPool, *DiskManager) {
+func newTestPool(t *testing.T, poolSize int) (*Pool, *disk.Manager) {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	dm, err := OpenDiskManager(path)
+	dm, err := disk.Open(path)
 	if err != nil {
-		t.Fatalf("OpenDiskManager: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { dm.Close() })
-	bp := NewBufferPool(dm, poolSize)
+	bp := New(dm, poolSize)
 	return bp, dm
 }
 
-func TestBufferPoolNewPage(t *testing.T) {
-	bp, _ := newTestBufferPool(t, 10)
+func TestPoolNewPage(t *testing.T) {
+	bp, _ := newTestPool(t, 10)
 
 	id, p, err := bp.NewPage()
 	if err != nil {
 		t.Fatalf("NewPage: %v", err)
 	}
-	if id == HeaderPageID {
+	if id == storage.HeaderPageID {
 		t.Error("NewPage should not return header page ID")
 	}
 	if p == nil {
@@ -37,18 +40,15 @@ func TestBufferPoolNewPage(t *testing.T) {
 	}
 }
 
-func TestBufferPoolFetchPage(t *testing.T) {
-	bp, _ := newTestBufferPool(t, 10)
+func TestPoolFetchPage(t *testing.T) {
+	bp, _ := newTestPool(t, 10)
 
-	// Create a page with data.
 	id, p, _ := bp.NewPage()
 	copy(p[:], "test data")
 	bp.UnpinPage(id, true)
 
-	// Flush to disk.
 	bp.FlushPage(id)
 
-	// Fetch it back.
 	p2, err := bp.FetchPage(id)
 	if err != nil {
 		t.Fatalf("FetchPage: %v", err)
@@ -60,16 +60,15 @@ func TestBufferPoolFetchPage(t *testing.T) {
 	}
 }
 
-func TestBufferPoolDirtyFlush(t *testing.T) {
-	bp, dm := newTestBufferPool(t, 10)
+func TestPoolDirtyFlush(t *testing.T) {
+	bp, dm := newTestPool(t, 10)
 
 	id, p, _ := bp.NewPage()
 	copy(p[:], "dirty page")
-	bp.UnpinPage(id, true) // mark dirty
+	bp.UnpinPage(id, true)
 
 	bp.FlushAll()
 
-	// Verify on disk.
 	diskPage, err := dm.ReadPage(id)
 	if err != nil {
 		t.Fatalf("ReadPage from disk: %v", err)
@@ -79,11 +78,10 @@ func TestBufferPoolDirtyFlush(t *testing.T) {
 	}
 }
 
-func TestBufferPoolEviction(t *testing.T) {
-	// Pool of 3 frames — allocate 4 pages to force eviction.
-	bp, dm := newTestBufferPool(t, 3)
+func TestPoolEviction(t *testing.T) {
+	bp, dm := newTestPool(t, 3)
 
-	ids := make([]PageID, 4)
+	ids := make([]storage.PageID, 4)
 	for i := range 4 {
 		id, p, err := bp.NewPage()
 		if err != nil {
@@ -94,11 +92,8 @@ func TestBufferPoolEviction(t *testing.T) {
 		ids[i] = id
 	}
 
-	// Flush remaining dirty pages so we can verify via disk.
 	bp.FlushAll()
 
-	// All 4 pages should have correct data on disk (evicted ones were flushed
-	// during eviction, remaining ones were flushed by FlushAll).
 	for i, id := range ids {
 		diskPage, err := dm.ReadPage(id)
 		if err != nil {
@@ -110,9 +105,8 @@ func TestBufferPoolEviction(t *testing.T) {
 	}
 }
 
-func TestBufferPoolPinPreventsEviction(t *testing.T) {
-	// Pool of 2 frames. Pin both, then try to allocate a third.
-	bp, _ := newTestBufferPool(t, 2)
+func TestPoolPinPreventsEviction(t *testing.T) {
+	bp, _ := newTestPool(t, 2)
 
 	_, _, err := bp.NewPage() // pinned
 	if err != nil {
@@ -123,15 +117,14 @@ func TestBufferPoolPinPreventsEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Both frames are pinned — this should fail.
 	_, _, err = bp.NewPage()
 	if err == nil {
 		t.Fatal("expected error when all frames are pinned")
 	}
 }
 
-func TestBufferPoolDoubleUnpin(t *testing.T) {
-	bp, _ := newTestBufferPool(t, 10)
+func TestPoolDoubleUnpin(t *testing.T) {
+	bp, _ := newTestPool(t, 10)
 
 	id, _, _ := bp.NewPage()
 	bp.UnpinPage(id, false)
@@ -142,8 +135,8 @@ func TestBufferPoolDoubleUnpin(t *testing.T) {
 	}
 }
 
-func TestBufferPoolUnpinUnknown(t *testing.T) {
-	bp, _ := newTestBufferPool(t, 10)
+func TestPoolUnpinUnknown(t *testing.T) {
+	bp, _ := newTestPool(t, 10)
 
 	err := bp.UnpinPage(999, false)
 	if err == nil {
@@ -151,14 +144,13 @@ func TestBufferPoolUnpinUnknown(t *testing.T) {
 	}
 }
 
-func TestBufferPoolCacheHit(t *testing.T) {
-	bp, _ := newTestBufferPool(t, 10)
+func TestPoolCacheHit(t *testing.T) {
+	bp, _ := newTestPool(t, 10)
 
 	id, p1, _ := bp.NewPage()
 	copy(p1[:], "cached")
 	bp.UnpinPage(id, false)
 
-	// Fetch again — should return same data from cache (no disk read needed).
 	p2, err := bp.FetchPage(id)
 	if err != nil {
 		t.Fatalf("FetchPage: %v", err)
@@ -170,8 +162,8 @@ func TestBufferPoolCacheHit(t *testing.T) {
 	}
 }
 
-func TestBufferPoolFlushPage(t *testing.T) {
-	bp, dm := newTestBufferPool(t, 10)
+func TestPoolFlushPage(t *testing.T) {
+	bp, dm := newTestPool(t, 10)
 
 	id, p, _ := bp.NewPage()
 	copy(p[:], "flush me")

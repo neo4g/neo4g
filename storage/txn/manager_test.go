@@ -1,33 +1,38 @@
-package storage
+package txn
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/seankohjs/neo4g/storage"
+	"github.com/seankohjs/neo4g/storage/disk"
+	"github.com/seankohjs/neo4g/storage/pool"
+	"github.com/seankohjs/neo4g/storage/wal"
 )
 
-func newTestTxEnv(t *testing.T) (*TxManager, *WAL, *BufferPool, *DiskManager) {
+func newTestTxEnv(t *testing.T) (*Manager, *wal.WAL, *pool.Pool, *disk.Manager) {
 	t.Helper()
 	dir := t.TempDir()
 
-	dm, err := OpenDiskManager(filepath.Join(dir, "test.db"))
+	dm, err := disk.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wal, err := OpenWAL(filepath.Join(dir, "test.wal"))
+	w, err := wal.Open(filepath.Join(dir, "test.wal"))
 	if err != nil {
 		dm.Close()
 		t.Fatal(err)
 	}
 
-	bp := NewBufferPool(dm, 100)
-	tm := NewTxManager(wal, bp, dm)
+	bp := pool.New(dm, 100)
+	tm := NewManager(w, bp, dm)
 
 	t.Cleanup(func() {
-		wal.Close()
+		w.Close()
 		dm.Close()
 	})
-	return tm, wal, bp, dm
+	return tm, w, bp, dm
 }
 
 func TestTxBeginCommit(t *testing.T) {
@@ -46,29 +51,24 @@ func TestTxBeginCommit(t *testing.T) {
 func TestTxBeginAbort(t *testing.T) {
 	tm, _, _, dm := newTestTxEnv(t)
 
-	// Allocate a page and write something.
 	pageID, page, _ := dm.AllocatePage()
 	copy(page[:], "original")
 	dm.WritePage(pageID, page)
 
 	txID := tm.Begin()
 
-	// Record a modification.
-	var before Page
+	var before storage.Page
 	copy(before[:], "original")
-	var after Page
+	var after storage.Page
 	copy(after[:], "modified")
 	tm.WritePage(txID, pageID, &before, &after)
 
-	// Write the after-image to disk (simulating buffer pool flush).
 	dm.WritePage(pageID, &after)
 
-	// Abort should restore the before-image.
 	if err := tm.Abort(txID); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
-	// Verify page is restored.
 	restored, _ := dm.ReadPage(pageID)
 	if string(restored[:8]) != "original" {
 		t.Errorf("expected 'original' after abort, got %q", string(restored[:8]))
@@ -83,17 +83,14 @@ func TestTxWritePageLocking(t *testing.T) {
 	tx1 := tm.Begin()
 	tx2 := tm.Begin()
 
-	var before, after Page
-	// tx1 locks the page.
+	var before, after storage.Page
 	tm.WritePage(tx1, pageID, &before, &after)
 
-	// tx2 should be blocked from writing to the same page.
 	err := tm.WritePage(tx2, pageID, &before, &after)
 	if err == nil {
 		t.Fatal("expected lock conflict error")
 	}
 
-	// After tx1 commits, tx2 should succeed.
 	tm.Commit(tx1)
 	err = tm.WritePage(tx2, pageID, &before, &after)
 	if err != nil {
@@ -110,23 +107,21 @@ func TestTxCommitNotFound(t *testing.T) {
 }
 
 func TestTxCheckpoint(t *testing.T) {
-	tm, wal, _, dm := newTestTxEnv(t)
+	tm, w, _, dm := newTestTxEnv(t)
 
 	pageID, _, _ := dm.AllocatePage()
 	txID := tm.Begin()
 
-	var before, after Page
+	var before, after storage.Page
 	copy(after[:], "checkpointed")
 	tm.WritePage(txID, pageID, &before, &after)
 	tm.Commit(txID)
 
-	// Checkpoint should flush and truncate WAL.
 	if err := tm.Checkpoint(); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	// WAL should be empty after checkpoint.
-	records, _ := wal.ReadAll()
+	records, _ := w.ReadAll()
 	if len(records) != 0 {
 		t.Errorf("expected 0 WAL records after checkpoint, got %d", len(records))
 	}
@@ -136,17 +131,17 @@ func TestTxCheckpoint(t *testing.T) {
 
 func TestWALWriteAndRead(t *testing.T) {
 	dir := t.TempDir()
-	wal, err := OpenWAL(filepath.Join(dir, "test.wal"))
+	w, err := wal.Open(filepath.Join(dir, "test.wal"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer wal.Close()
+	defer w.Close()
 
-	var before, after Page
+	var before, after storage.Page
 	copy(before[:], "before")
 	copy(after[:], "after")
 
-	lsn, err := wal.LogUpdate(1, PageID(5), &before, &after)
+	lsn, err := w.LogUpdate(1, storage.PageID(5), &before, &after)
 	if err != nil {
 		t.Fatalf("LogUpdate: %v", err)
 	}
@@ -154,19 +149,19 @@ func TestWALWriteAndRead(t *testing.T) {
 		t.Error("expected non-zero LSN")
 	}
 
-	wal.LogCommit(1)
+	w.LogCommit(1)
 
-	records, err := wal.ReadAll()
+	records, err := w.ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
-	if records[0].Type != WALRecordUpdate {
+	if records[0].Type != wal.RecordUpdate {
 		t.Errorf("expected UPDATE record, got type %d", records[0].Type)
 	}
-	if records[1].Type != WALRecordCommit {
+	if records[1].Type != wal.RecordCommit {
 		t.Errorf("expected COMMIT record, got type %d", records[1].Type)
 	}
 	if string(records[0].BeforeData[:6]) != "before" {
@@ -179,13 +174,13 @@ func TestWALWriteAndRead(t *testing.T) {
 
 func TestWALTruncate(t *testing.T) {
 	dir := t.TempDir()
-	wal, _ := OpenWAL(filepath.Join(dir, "test.wal"))
-	defer wal.Close()
+	w, _ := wal.Open(filepath.Join(dir, "test.wal"))
+	defer w.Close()
 
-	wal.LogCommit(1)
-	wal.Truncate()
+	w.LogCommit(1)
+	w.Truncate()
 
-	records, _ := wal.ReadAll()
+	records, _ := w.ReadAll()
 	if len(records) != 0 {
 		t.Errorf("expected 0 records after truncate, got %d", len(records))
 	}
@@ -195,29 +190,26 @@ func TestWALTruncate(t *testing.T) {
 
 func TestRecoveryRedoCommitted(t *testing.T) {
 	dir := t.TempDir()
-	dm, _ := OpenDiskManager(filepath.Join(dir, "test.db"))
-	wal, _ := OpenWAL(filepath.Join(dir, "test.wal"))
+	dm, _ := disk.Open(filepath.Join(dir, "test.db"))
+	w, _ := wal.Open(filepath.Join(dir, "test.wal"))
 
-	// Allocate a page.
 	pageID, _, _ := dm.AllocatePage()
 
-	// Simulate: tx1 modified page and committed, but page wasn't flushed to disk.
-	var before, after Page
+	var before, after storage.Page
 	copy(after[:], "committed data")
-	wal.LogUpdate(1, pageID, &before, &after)
-	wal.LogCommit(1)
-	wal.Sync()
+	w.LogUpdate(1, pageID, &before, &after)
+	w.LogCommit(1)
+	w.Sync()
 
-	// Close and reopen (simulating crash — page was never written to disk).
-	wal.Close()
+	w.Close()
 	dm.Close()
 
-	dm2, _ := OpenDiskManager(filepath.Join(dir, "test.db"))
-	wal2, _ := OpenWAL(filepath.Join(dir, "test.wal"))
+	dm2, _ := disk.Open(filepath.Join(dir, "test.db"))
+	w2, _ := wal.Open(filepath.Join(dir, "test.wal"))
 	defer dm2.Close()
-	defer wal2.Close()
+	defer w2.Close()
 
-	redone, undone, err := Recover(wal2, dm2)
+	redone, undone, err := Recover(w2, dm2)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -228,7 +220,6 @@ func TestRecoveryRedoCommitted(t *testing.T) {
 		t.Errorf("expected 0 undone tx, got %d", undone)
 	}
 
-	// Page should now have committed data.
 	page, _ := dm2.ReadPage(pageID)
 	if string(page[:14]) != "committed data" {
 		t.Errorf("expected 'committed data', got %q", string(page[:14]))
@@ -237,33 +228,31 @@ func TestRecoveryRedoCommitted(t *testing.T) {
 
 func TestRecoveryUndoUncommitted(t *testing.T) {
 	dir := t.TempDir()
-	dm, _ := OpenDiskManager(filepath.Join(dir, "test.db"))
-	wal, _ := OpenWAL(filepath.Join(dir, "test.wal"))
+	dm, _ := disk.Open(filepath.Join(dir, "test.db"))
+	w, _ := wal.Open(filepath.Join(dir, "test.wal"))
 
 	pageID, page, _ := dm.AllocatePage()
 	copy(page[:], "original")
 	dm.WritePage(pageID, page)
 
-	// Simulate: tx1 modified page but did NOT commit (crash before commit).
-	var before Page
+	var before storage.Page
 	copy(before[:], "original")
-	var after Page
+	var after storage.Page
 	copy(after[:], "uncommitted")
-	wal.LogUpdate(1, pageID, &before, &after)
+	w.LogUpdate(1, pageID, &before, &after)
 
-	// Simulate the dirty page being flushed to disk before commit.
 	dm.WritePage(pageID, &after)
-	wal.Sync()
+	w.Sync()
 
-	wal.Close()
+	w.Close()
 	dm.Close()
 
-	dm2, _ := OpenDiskManager(filepath.Join(dir, "test.db"))
-	wal2, _ := OpenWAL(filepath.Join(dir, "test.wal"))
+	dm2, _ := disk.Open(filepath.Join(dir, "test.db"))
+	w2, _ := wal.Open(filepath.Join(dir, "test.wal"))
 	defer dm2.Close()
-	defer wal2.Close()
+	defer w2.Close()
 
-	redone, undone, err := Recover(wal2, dm2)
+	redone, undone, err := Recover(w2, dm2)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -274,7 +263,6 @@ func TestRecoveryUndoUncommitted(t *testing.T) {
 		t.Errorf("expected 1 undone, got %d", undone)
 	}
 
-	// Page should be restored to original.
 	page2, _ := dm2.ReadPage(pageID)
 	if string(page2[:8]) != "original" {
 		t.Errorf("expected 'original' after undo, got %q", string(page2[:8]))
@@ -283,13 +271,12 @@ func TestRecoveryUndoUncommitted(t *testing.T) {
 
 func TestRecoveryCleanShutdown(t *testing.T) {
 	dir := t.TempDir()
-	dm, _ := OpenDiskManager(filepath.Join(dir, "test.db"))
-	wal, _ := OpenWAL(filepath.Join(dir, "test.wal"))
+	dm, _ := disk.Open(filepath.Join(dir, "test.db"))
+	w, _ := wal.Open(filepath.Join(dir, "test.wal"))
 	defer dm.Close()
-	defer wal.Close()
+	defer w.Close()
 
-	// Empty WAL — clean shutdown.
-	redone, undone, err := Recover(wal, dm)
+	redone, undone, err := Recover(w, dm)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
