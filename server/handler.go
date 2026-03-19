@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/seankohjs/neo4g/parser"
 )
 
 // queryRequest is the JSON body for POST /api/query.
@@ -33,9 +35,7 @@ func (s *Server) routes() *http.ServeMux {
 	return mux
 }
 
-// handleQuery accepts a query string and (eventually) feeds it to the
-// query parser/executor. For now it returns the raw query string back
-// as acknowledgement — the query engine is not wired yet.
+// handleQuery parses and executes a Cypher-lite query.
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -48,10 +48,17 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: parse → plan → execute via query engine
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"query":  req.Query,
-		"params": req.Params,
-		"status": "query engine not connected yet",
-	})
+	stmt, err := parser.Parse(req.Query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "parse error: "+err.Error())
+		return
+	}
+
+	result, err := s.executor.Execute(stmt, req.Params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "execute error: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }

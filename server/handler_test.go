@@ -39,40 +39,83 @@ func postQuery(ts *httptest.Server, query string, params map[string]interface{})
 	return resp, result
 }
 
-func TestQueryEndpoint(t *testing.T) {
+func TestQueryCreateAndReturn(t *testing.T) {
 	_, ts := testServer(t)
 
-	resp, body := postQuery(ts, "MATCH (n:Person) RETURN n", nil)
+	// CREATE a node
+	resp, body := postQuery(ts, `CREATE (n:Person {name: "Alice", age: 30})`, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, body)
+		t.Fatalf("CREATE: expected 200, got %d: %v", resp.StatusCode, body)
+	}
+
+	// MATCH + RETURN
+	resp, body = postQuery(ts, `MATCH (n:Person) RETURN n`, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("MATCH: expected 200, got %d: %v", resp.StatusCode, body)
 	}
 
 	data := body["data"].(map[string]interface{})
-	if data["query"] != "MATCH (n:Person) RETURN n" {
-		t.Errorf("query echo mismatch: %v", data["query"])
+	rows := data["rows"].([]interface{})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if data["status"] != "query engine not connected yet" {
-		t.Errorf("unexpected status: %v", data["status"])
+
+	row := rows[0].(map[string]interface{})
+	n := row["n"].(map[string]interface{})
+	props := n["properties"].(map[string]interface{})
+	if props["name"] != "Alice" {
+		t.Errorf("expected Alice, got %v", props["name"])
 	}
 }
 
-func TestQueryEndpointWithParams(t *testing.T) {
+func TestQueryReturnProperties(t *testing.T) {
 	_, ts := testServer(t)
 
-	resp, body := postQuery(ts, "MATCH (n) WHERE n.name = $name RETURN n", map[string]interface{}{
-		"name": "Alice",
-	})
+	postQuery(ts, `CREATE (n:Person {name: "Bob", age: 25})`, nil)
+
+	resp, body := postQuery(ts, `MATCH (n:Person) RETURN n.name, n.age`, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+
 	data := body["data"].(map[string]interface{})
-	params := data["params"].(map[string]interface{})
-	if params["name"] != "Alice" {
-		t.Errorf("param mismatch: %v", params["name"])
+	rows := data["rows"].([]interface{})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	row := rows[0].(map[string]interface{})
+	if row["n.name"] != "Bob" {
+		t.Errorf("expected Bob, got %v", row["n.name"])
+	}
+	// JSON numbers are float64
+	if row["n.age"] != float64(25) {
+		t.Errorf("expected 25, got %v (type %T)", row["n.age"], row["n.age"])
 	}
 }
 
-func TestQueryEndpointEmptyQuery(t *testing.T) {
+func TestQueryWithParams(t *testing.T) {
+	_, ts := testServer(t)
+
+	postQuery(ts, `CREATE (n:Person {name: "Alice"})`, nil)
+	postQuery(ts, `CREATE (n:Person {name: "Bob"})`, nil)
+
+	resp, body := postQuery(ts, `MATCH (n:Person) WHERE n.name = $name RETURN n.name`, map[string]interface{}{"name": "Alice"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	data := body["data"].(map[string]interface{})
+	rows := data["rows"].([]interface{})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	row := rows[0].(map[string]interface{})
+	if row["n.name"] != "Alice" {
+		t.Errorf("expected Alice, got %v", row["n.name"])
+	}
+}
+
+func TestQueryEmptyQuery(t *testing.T) {
 	_, ts := testServer(t)
 
 	resp, body := postQuery(ts, "", nil)
@@ -84,7 +127,7 @@ func TestQueryEndpointEmptyQuery(t *testing.T) {
 	}
 }
 
-func TestQueryEndpointBadJSON(t *testing.T) {
+func TestQueryBadJSON(t *testing.T) {
 	_, ts := testServer(t)
 
 	resp, _ := http.Post(ts.URL+"/api/query", "application/json", bytes.NewReader([]byte("not json")))
@@ -94,21 +137,44 @@ func TestQueryEndpointBadJSON(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestQueryParseError(t *testing.T) {
+	_, ts := testServer(t)
+
+	resp, body := postQuery(ts, `MATCH (n:Person RETURN n`, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for parse error, got %d", resp.StatusCode)
+	}
+	errMsg, ok := body["error"].(string)
+	if !ok || errMsg == "" {
+		t.Error("expected parse error message")
+	}
+}
+
 func TestConcurrentQueries(t *testing.T) {
 	_, ts := testServer(t)
+
+	// Seed data
+	for i := range 10 {
+		postQuery(ts, fmt.Sprintf(`CREATE (n:Item {idx: %d})`, i), nil)
+	}
 
 	const goroutines = 50
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines)
 
-	for i := range goroutines {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			q := fmt.Sprintf("MATCH (n) WHERE n.id = %d RETURN n", i)
-			resp, body := postQuery(ts, q, nil)
+			resp, body := postQuery(ts, `MATCH (n:Item) RETURN n`, nil)
 			if resp.StatusCode != http.StatusOK {
-				errs <- fmt.Errorf("goroutine %d: status %d: %v", i, resp.StatusCode, body)
+				errs <- fmt.Errorf("status %d: %v", resp.StatusCode, body)
+				return
+			}
+			data := body["data"].(map[string]interface{})
+			rows := data["rows"].([]interface{})
+			if len(rows) != 10 {
+				errs <- fmt.Errorf("expected 10 rows, got %d", len(rows))
 			}
 		}()
 	}

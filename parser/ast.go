@@ -1,4 +1,4 @@
-package query
+package parser
 
 // Statement is the top-level AST node for a Cypher-lite query.
 // A statement is an optional MATCH clause followed by exactly one of

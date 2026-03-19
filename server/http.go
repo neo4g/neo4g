@@ -7,13 +7,16 @@ import (
 	"log"
 	"net"
 	"net/http"
+
+	"github.com/seankohjs/neo4g/query"
 )
 
 // Server wraps the database Engine with an HTTP API.
 type Server struct {
-	engine *Engine
-	http   *http.Server
-	cfg    Config
+	engine   *Engine
+	executor *query.Executor
+	http     *http.Server
+	cfg      Config
 }
 
 // NewServer opens the database engine and sets up the HTTP server.
@@ -24,8 +27,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		engine: engine,
-		cfg:    cfg,
+		engine:   engine,
+		executor: query.NewExecutor(engine.Store(), engine.Scanner()),
+		cfg:      cfg,
 	}
 
 	s.http = &http.Server{
