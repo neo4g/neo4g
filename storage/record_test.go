@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -278,6 +277,4 @@ func TestManyEdges(t *testing.T) {
 	if len(lastOut) != 0 || len(lastIn) != 1 {
 		t.Errorf("last node: expected 0/1, got %d/%d", len(lastOut), len(lastIn))
 	}
-
-	_ = fmt.Sprint("test")
 }
