@@ -16,6 +16,9 @@ type Config struct {
 	WALFile    string // WAL file name (relative to DataDir)
 	PoolSize   int    // buffer pool frame count
 
+	// WAL
+	WALNoSync bool // skip fsync per commit (faster writes, small durability risk)
+
 	// HTTP
 	ListenAddr      string        // address to bind HTTP server
 	ReadTimeout     time.Duration // max duration for reading request
@@ -71,6 +74,12 @@ func ConfigFromEnv() Config {
 	if v := os.Getenv("NEO4G_POOL_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.PoolSize = n
+		}
+	}
+	if v := os.Getenv("NEO4G_WAL_NOSYNC"); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes", "on":
+			cfg.WALNoSync = true
 		}
 	}
 	if v := os.Getenv("NEO4G_LISTEN_ADDR"); v != "" {

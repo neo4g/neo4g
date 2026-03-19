@@ -40,8 +40,9 @@ const (
 //
 // Thread safety: Manager is safe for concurrent use.
 type Manager struct {
-	mu   sync.Mutex
-	file *os.File
+	mu          sync.Mutex
+	file        *os.File
+	headerDirty bool
 
 	pageCount  uint32
 	freeHead   storage.PageID
@@ -94,11 +95,24 @@ func (dm *Manager) Close() error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	if err := dm.flushHeader(); err != nil {
-		dm.file.Close()
-		return fmt.Errorf("flush header on close: %w", err)
+	if dm.headerDirty {
+		if err := dm.flushHeader(); err != nil {
+			dm.file.Close()
+			return fmt.Errorf("flush header on close: %w", err)
+		}
 	}
 	return dm.file.Close()
+}
+
+// FlushHeader writes the in-memory header to disk if it has been modified.
+// Called by the transaction manager at commit time to batch header writes.
+func (dm *Manager) FlushHeader() error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	if !dm.headerDirty {
+		return nil
+	}
+	return dm.flushHeader()
 }
 
 // ReadPage reads the page with the given ID from disk.
@@ -162,9 +176,7 @@ func (dm *Manager) AllocatePage() (storage.PageID, *storage.Page, error) {
 		if err := dm.writePageLocked(id, p); err != nil {
 			return 0, nil, fmt.Errorf("zero freed page: %w", err)
 		}
-		if err := dm.flushHeader(); err != nil {
-			return 0, nil, fmt.Errorf("flush header after alloc: %w", err)
-		}
+		dm.headerDirty = true
 		return id, p, nil
 	}
 
@@ -176,9 +188,7 @@ func (dm *Manager) AllocatePage() (storage.PageID, *storage.Page, error) {
 		dm.pageCount--
 		return 0, nil, fmt.Errorf("extend file: %w", err)
 	}
-	if err := dm.flushHeader(); err != nil {
-		return 0, nil, fmt.Errorf("flush header after extend: %w", err)
-	}
+	dm.headerDirty = true
 	return id, p, nil
 }
 
@@ -202,7 +212,8 @@ func (dm *Manager) FreePage(id storage.PageID) error {
 	}
 
 	dm.freeHead = id
-	return dm.flushHeader()
+	dm.headerDirty = true
+	return nil
 }
 
 // NextNodeID atomically returns and increments the node ID counter.
@@ -212,10 +223,7 @@ func (dm *Manager) NextNodeID() (uint64, error) {
 
 	id := dm.nextNodeID
 	dm.nextNodeID++
-	if err := dm.flushHeader(); err != nil {
-		dm.nextNodeID--
-		return 0, err
-	}
+	dm.headerDirty = true
 	return id, nil
 }
 
@@ -226,10 +234,7 @@ func (dm *Manager) NextEdgeID() (uint64, error) {
 
 	id := dm.nextEdgeID
 	dm.nextEdgeID++
-	if err := dm.flushHeader(); err != nil {
-		dm.nextEdgeID--
-		return 0, err
-	}
+	dm.headerDirty = true
 	return id, nil
 }
 
@@ -237,6 +242,11 @@ func (dm *Manager) NextEdgeID() (uint64, error) {
 func (dm *Manager) Sync() error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
+	if dm.headerDirty {
+		if err := dm.flushHeader(); err != nil {
+			return err
+		}
+	}
 	return dm.file.Sync()
 }
 
@@ -254,10 +264,10 @@ func (dm *Manager) EdgeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.U
 func (dm *Manager) OutIndexRoot() storage.PageID   { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.outIndexRoot }
 func (dm *Manager) InIndexRoot() storage.PageID    { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.inIndexRoot }
 
-func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodeIndexRoot = id; return dm.flushHeader() }
-func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgeIndexRoot = id; return dm.flushHeader() }
-func (dm *Manager) SetOutIndexRoot(id storage.PageID) error  { dm.mu.Lock(); defer dm.mu.Unlock(); dm.outIndexRoot = id; return dm.flushHeader() }
-func (dm *Manager) SetInIndexRoot(id storage.PageID) error   { dm.mu.Lock(); defer dm.mu.Unlock(); dm.inIndexRoot = id; return dm.flushHeader() }
+func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodeIndexRoot = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgeIndexRoot = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetOutIndexRoot(id storage.PageID) error  { dm.mu.Lock(); defer dm.mu.Unlock(); dm.outIndexRoot = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetInIndexRoot(id storage.PageID) error   { dm.mu.Lock(); defer dm.mu.Unlock(); dm.inIndexRoot = id; dm.headerDirty = true; return nil }
 
 // --- Record page chain persistence ---
 
@@ -266,10 +276,10 @@ func (dm *Manager) NodePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unl
 func (dm *Manager) EdgePageHead() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageHead }
 func (dm *Manager) EdgePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageTail }
 
-func (dm *Manager) SetNodePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageHead = id; return dm.flushHeader() }
-func (dm *Manager) SetNodePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageTail = id; return dm.flushHeader() }
-func (dm *Manager) SetEdgePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageHead = id; return dm.flushHeader() }
-func (dm *Manager) SetEdgePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageTail = id; return dm.flushHeader() }
+func (dm *Manager) SetNodePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageHead = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetNodePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageTail = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetEdgePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageHead = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetEdgePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageTail = id; dm.headerDirty = true; return nil }
 
 // --- Internal helpers (caller must hold dm.mu) ---
 
@@ -344,6 +354,7 @@ func (dm *Manager) flushHeader() error {
 	if n != storage.PageSize {
 		return fmt.Errorf("header short write (%d bytes)", n)
 	}
+	dm.headerDirty = false
 	return nil
 }
 

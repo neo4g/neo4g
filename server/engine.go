@@ -87,6 +87,7 @@ func Open(cfg Config) (*Engine, error) {
 
 	if cfg.WALEnabled {
 		e.txm = txn.NewManager(e.w, e.pool, dm)
+		e.txm.NoSync = cfg.WALNoSync
 		rm.SetTxManager(e.txm)
 	}
 

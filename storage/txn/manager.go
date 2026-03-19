@@ -40,6 +40,12 @@ type Manager struct {
 	active   map[storage.TxID]*txEntry
 
 	pageLocks map[storage.PageID]storage.TxID
+
+	// NoSync skips fsync on every commit for higher throughput.
+	// Data is still written to the WAL file, but not forced to durable
+	// storage until the next Checkpoint or Sync call. A crash may lose
+	// the last few committed transactions.
+	NoSync bool
 }
 
 // NewManager creates a transaction manager.
@@ -111,11 +117,17 @@ func (tm *Manager) Commit(txID storage.TxID) error {
 		return fmt.Errorf("transaction %d is not active", txID)
 	}
 
+	if err := tm.disk.FlushHeader(); err != nil {
+		return fmt.Errorf("flush header: %w", err)
+	}
+
 	if _, err := tm.wal.LogCommit(txID); err != nil {
 		return fmt.Errorf("WAL log commit: %w", err)
 	}
-	if err := tm.wal.Sync(); err != nil {
-		return fmt.Errorf("WAL sync: %w", err)
+	if !tm.NoSync {
+		if err := tm.wal.Sync(); err != nil {
+			return fmt.Errorf("WAL sync: %w", err)
+		}
 	}
 
 	tx.state = TxStateCommitted
