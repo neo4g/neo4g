@@ -22,6 +22,16 @@ const (
 	headerFreeHeadOffset   = 12
 	headerNextNodeIDOffset = 16
 	headerNextEdgeIDOffset = 24
+	// B+Tree index root page IDs.
+	headerNodeIndexRoot = 32
+	headerEdgeIndexRoot = 36
+	headerOutIndexRoot  = 40
+	headerInIndexRoot   = 44
+	// Record page chain head/tail pointers.
+	headerNodePageHead = 48
+	headerNodePageTail = 52
+	headerEdgePageHead = 56
+	headerEdgePageTail = 60
 )
 
 // Manager handles raw page I/O against a single data file.
@@ -37,6 +47,16 @@ type Manager struct {
 	freeHead   storage.PageID
 	nextNodeID uint64
 	nextEdgeID uint64
+
+	nodeIndexRoot storage.PageID
+	edgeIndexRoot storage.PageID
+	outIndexRoot  storage.PageID
+	inIndexRoot   storage.PageID
+
+	nodePageHead storage.PageID
+	nodePageTail storage.PageID
+	edgePageHead storage.PageID
+	edgePageTail storage.PageID
 }
 
 // Open opens or creates a database file at the given path.
@@ -227,6 +247,30 @@ func (dm *Manager) PageCount() uint32 {
 	return dm.pageCount
 }
 
+// --- Index root persistence ---
+
+func (dm *Manager) NodeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodeIndexRoot }
+func (dm *Manager) EdgeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgeIndexRoot }
+func (dm *Manager) OutIndexRoot() storage.PageID   { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.outIndexRoot }
+func (dm *Manager) InIndexRoot() storage.PageID    { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.inIndexRoot }
+
+func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodeIndexRoot = id; return dm.flushHeader() }
+func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgeIndexRoot = id; return dm.flushHeader() }
+func (dm *Manager) SetOutIndexRoot(id storage.PageID) error  { dm.mu.Lock(); defer dm.mu.Unlock(); dm.outIndexRoot = id; return dm.flushHeader() }
+func (dm *Manager) SetInIndexRoot(id storage.PageID) error   { dm.mu.Lock(); defer dm.mu.Unlock(); dm.inIndexRoot = id; return dm.flushHeader() }
+
+// --- Record page chain persistence ---
+
+func (dm *Manager) NodePageHead() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodePageHead }
+func (dm *Manager) NodePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodePageTail }
+func (dm *Manager) EdgePageHead() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageHead }
+func (dm *Manager) EdgePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageTail }
+
+func (dm *Manager) SetNodePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageHead = id; return dm.flushHeader() }
+func (dm *Manager) SetNodePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageTail = id; return dm.flushHeader() }
+func (dm *Manager) SetEdgePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageHead = id; return dm.flushHeader() }
+func (dm *Manager) SetEdgePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageTail = id; return dm.flushHeader() }
+
 // --- Internal helpers (caller must hold dm.mu) ---
 
 func (dm *Manager) initHeader() error {
@@ -261,6 +305,16 @@ func (dm *Manager) loadHeader() error {
 	dm.freeHead = storage.PageID(binary.LittleEndian.Uint32(p[headerFreeHeadOffset:]))
 	dm.nextNodeID = binary.LittleEndian.Uint64(p[headerNextNodeIDOffset:])
 	dm.nextEdgeID = binary.LittleEndian.Uint64(p[headerNextEdgeIDOffset:])
+
+	dm.nodeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerNodeIndexRoot:]))
+	dm.edgeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgeIndexRoot:]))
+	dm.outIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerOutIndexRoot:]))
+	dm.inIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerInIndexRoot:]))
+
+	dm.nodePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageHead:]))
+	dm.nodePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageTail:]))
+	dm.edgePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageHead:]))
+	dm.edgePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageTail:]))
 	return nil
 }
 
@@ -272,6 +326,16 @@ func (dm *Manager) flushHeader() error {
 	binary.LittleEndian.PutUint32(p[headerFreeHeadOffset:], uint32(dm.freeHead))
 	binary.LittleEndian.PutUint64(p[headerNextNodeIDOffset:], dm.nextNodeID)
 	binary.LittleEndian.PutUint64(p[headerNextEdgeIDOffset:], dm.nextEdgeID)
+
+	binary.LittleEndian.PutUint32(p[headerNodeIndexRoot:], uint32(dm.nodeIndexRoot))
+	binary.LittleEndian.PutUint32(p[headerEdgeIndexRoot:], uint32(dm.edgeIndexRoot))
+	binary.LittleEndian.PutUint32(p[headerOutIndexRoot:], uint32(dm.outIndexRoot))
+	binary.LittleEndian.PutUint32(p[headerInIndexRoot:], uint32(dm.inIndexRoot))
+
+	binary.LittleEndian.PutUint32(p[headerNodePageHead:], uint32(dm.nodePageHead))
+	binary.LittleEndian.PutUint32(p[headerNodePageTail:], uint32(dm.nodePageTail))
+	binary.LittleEndian.PutUint32(p[headerEdgePageHead:], uint32(dm.edgePageHead))
+	binary.LittleEndian.PutUint32(p[headerEdgePageTail:], uint32(dm.edgePageTail))
 
 	n, err := dm.file.WriteAt(p[:], 0)
 	if err != nil {

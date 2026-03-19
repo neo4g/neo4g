@@ -31,8 +31,7 @@ A minimal Neo4j-equivalent graph database engine in Go (CS464). Property graph m
 |------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Layer breakdown, dependency graph, on-disk format, data flow |
 | [PACKAGES.md](PACKAGES.md) | Every package: exported types, functions, methods, constants, implementation notes |
-| [INTERFACES.md](INTERFACES.md) | Proposed interfaces for layer boundaries, current vs target state |
-| [GAPS.md](GAPS.md) | Integration gaps, what needs wiring, how to fix each one |
+| [INTERFACES.md](INTERFACES.md) | Interfaces for layer boundaries (Store, Scanner, Index, PageManager) |
 | [STATUS.md](STATUS.md) | Live component status tracker + changelog |
 
 ## Status Tracking

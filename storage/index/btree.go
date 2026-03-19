@@ -11,6 +11,8 @@ import (
 	"github.com/seankohjs/neo4g/storage/pool"
 )
 
+var _ storage.Index = (*BTree)(nil)
+
 // B+Tree page layout constants.
 const (
 	btreeHeaderSize = 20

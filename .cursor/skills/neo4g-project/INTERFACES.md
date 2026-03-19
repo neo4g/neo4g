@@ -1,6 +1,6 @@
-# Neo4g — Proposed Interfaces
+# Neo4g — Interfaces
 
-These interfaces don't exist in code yet. They represent the **target API surface** at each layer boundary. Extracting them will decouple layers and make testing easier.
+Defined in `storage/ifaces.go`. Compile-time assertions in implementing packages.
 
 ## Store — Record Layer API
 

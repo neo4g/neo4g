@@ -11,6 +11,8 @@ import (
 	"github.com/seankohjs/neo4g/storage/disk"
 )
 
+var _ storage.PageManager = (*Pool)(nil)
+
 type frame struct {
 	page     storage.Page
 	pageID   storage.PageID

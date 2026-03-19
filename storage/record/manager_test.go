@@ -6,7 +6,10 @@ import (
 
 	"github.com/seankohjs/neo4g/graph"
 	"github.com/seankohjs/neo4g/storage/disk"
+	"github.com/seankohjs/neo4g/storage/index"
 	"github.com/seankohjs/neo4g/storage/pool"
+	"github.com/seankohjs/neo4g/storage/txn"
+	"github.com/seankohjs/neo4g/storage/wal"
 )
 
 func newTestManager(t *testing.T) *Manager {
@@ -20,11 +23,87 @@ func newTestManager(t *testing.T) *Manager {
 	t.Cleanup(func() { dm.Close() })
 
 	bp := pool.New(dm, 100)
-	rm, err := NewManager(bp, dm)
+	idx, err := index.NewManager(bp, dm)
+	if err != nil {
+		t.Fatalf("index.NewManager: %v", err)
+	}
+	rm, err := NewManager(bp, dm, idx)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
 	return rm
+}
+
+func newTestManagerWithTx(t *testing.T) (*Manager, string) {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	dm, err := disk.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { dm.Close() })
+
+	walPath := filepath.Join(dir, "test.wal")
+	w, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatalf("wal.Open: %v", err)
+	}
+	t.Cleanup(func() { w.Close() })
+
+	bp := pool.New(dm, 100)
+	idx, err := index.NewManager(bp, dm)
+	if err != nil {
+		t.Fatalf("index.NewManager: %v", err)
+	}
+	tm := txn.NewManager(w, bp, dm)
+
+	rm, err := NewManager(bp, dm, idx)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	rm.SetTxManager(tm)
+	return rm, dir
+}
+
+func TestCRUDWithTransactions(t *testing.T) {
+	rm, _ := newTestManagerWithTx(t)
+
+	id, err := rm.CreateNode([]string{"Person"}, map[string]graph.Value{"name": graph.StringValue("Alice")})
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	node, err := rm.GetNode(id)
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if node.Properties["name"].AsString() != "Alice" {
+		t.Errorf("expected Alice, got %s", node.Properties["name"].AsString())
+	}
+
+	err = rm.UpdateNode(id, map[string]graph.Value{"name": graph.StringValue("Bob")})
+	if err != nil {
+		t.Fatalf("UpdateNode: %v", err)
+	}
+
+	node, _ = rm.GetNode(id)
+	if node.Properties["name"].AsString() != "Bob" {
+		t.Errorf("expected Bob, got %s", node.Properties["name"].AsString())
+	}
+
+	id2, _ := rm.CreateNode([]string{"X"}, map[string]graph.Value{})
+	eid, err := rm.CreateEdge("KNOWS", id, id2, map[string]graph.Value{})
+	if err != nil {
+		t.Fatalf("CreateEdge: %v", err)
+	}
+
+	if err := rm.DeleteEdge(eid); err != nil {
+		t.Fatalf("DeleteEdge: %v", err)
+	}
+	if err := rm.DeleteNode(id); err != nil {
+		t.Fatalf("DeleteNode: %v", err)
+	}
 }
 
 func TestCreateAndGetNode(t *testing.T) {
@@ -232,6 +311,95 @@ func TestManyNodes(t *testing.T) {
 		if node.Properties["index"].AsInt() != int64(i) {
 			t.Errorf("node %d: expected index %d, got %d", id, i, node.Properties["index"].AsInt())
 		}
+	}
+}
+
+func TestScanNodes(t *testing.T) {
+	rm := newTestManager(t)
+	rm.CreateNode([]string{"Person"}, map[string]graph.Value{"name": graph.StringValue("Alice")})
+	rm.CreateNode([]string{"Person", "Employee"}, map[string]graph.Value{"name": graph.StringValue("Bob")})
+	rm.CreateNode([]string{"Company"}, map[string]graph.Value{"name": graph.StringValue("Acme")})
+
+	all, err := rm.ScanNodes(nil)
+	if err != nil {
+		t.Fatalf("ScanNodes(nil): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3 nodes, got %d", len(all))
+	}
+
+	persons, err := rm.ScanNodes([]string{"Person"})
+	if err != nil {
+		t.Fatalf("ScanNodes(Person): %v", err)
+	}
+	if len(persons) != 2 {
+		t.Errorf("expected 2 Person nodes, got %d", len(persons))
+	}
+
+	employees, err := rm.ScanNodes([]string{"Employee"})
+	if err != nil {
+		t.Fatalf("ScanNodes(Employee): %v", err)
+	}
+	if len(employees) != 1 {
+		t.Errorf("expected 1 Employee node, got %d", len(employees))
+	}
+}
+
+func TestScanEdges(t *testing.T) {
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
+	n2, _ := rm.CreateNode([]string{"B"}, map[string]graph.Value{})
+	n3, _ := rm.CreateNode([]string{"C"}, map[string]graph.Value{})
+
+	rm.CreateEdge("KNOWS", n1, n2, map[string]graph.Value{})
+	rm.CreateEdge("WORKS_AT", n1, n3, map[string]graph.Value{})
+	rm.CreateEdge("KNOWS", n2, n3, map[string]graph.Value{})
+
+	all, err := rm.ScanEdges("")
+	if err != nil {
+		t.Fatalf("ScanEdges(''): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3 edges, got %d", len(all))
+	}
+
+	knows, err := rm.ScanEdges("KNOWS")
+	if err != nil {
+		t.Fatalf("ScanEdges('KNOWS'): %v", err)
+	}
+	if len(knows) != 2 {
+		t.Errorf("expected 2 KNOWS edges, got %d", len(knows))
+	}
+}
+
+func TestExpand(t *testing.T) {
+	rm := newTestManager(t)
+	n1, _ := rm.CreateNode([]string{"A"}, map[string]graph.Value{})
+	n2, _ := rm.CreateNode([]string{"B"}, map[string]graph.Value{})
+	n3, _ := rm.CreateNode([]string{"C"}, map[string]graph.Value{})
+
+	rm.CreateEdge("KNOWS", n1, n2, map[string]graph.Value{})
+	rm.CreateEdge("WORKS_AT", n1, n3, map[string]graph.Value{})
+	rm.CreateEdge("KNOWS", n2, n1, map[string]graph.Value{})
+
+	outAll, _ := rm.Expand(n1, graph.Outgoing, "")
+	if len(outAll) != 2 {
+		t.Errorf("expected 2 outgoing, got %d", len(outAll))
+	}
+
+	outKnows, _ := rm.Expand(n1, graph.Outgoing, "KNOWS")
+	if len(outKnows) != 1 {
+		t.Errorf("expected 1 outgoing KNOWS, got %d", len(outKnows))
+	}
+
+	inAll, _ := rm.Expand(n1, graph.Incoming, "")
+	if len(inAll) != 1 {
+		t.Errorf("expected 1 incoming, got %d", len(inAll))
+	}
+
+	bothAll, _ := rm.Expand(n1, graph.Both, "")
+	if len(bothAll) != 3 {
+		t.Errorf("expected 3 both, got %d", len(bothAll))
 	}
 }
 
