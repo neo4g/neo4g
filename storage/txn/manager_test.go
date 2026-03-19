@@ -158,17 +158,20 @@ func TestWALWriteAndRead(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
-	if records[0].Type != wal.RecordUpdate {
-		t.Errorf("expected UPDATE record, got type %d", records[0].Type)
+	if records[0].Type != wal.RecordUpdateDelta {
+		t.Errorf("expected UPDATE_DELTA record, got type %d", records[0].Type)
 	}
 	if records[1].Type != wal.RecordCommit {
 		t.Errorf("expected COMMIT record, got type %d", records[1].Type)
 	}
-	if string(records[0].BeforeData[:6]) != "before" {
-		t.Errorf("before-image mismatch")
+	// Verify delta can reconstruct both directions
+	reconstructed := wal.ApplyDelta(&before, records[0].DeltaData)
+	if string(reconstructed[:5]) != "after" {
+		t.Errorf("delta redo mismatch")
 	}
-	if string(records[0].AfterData[:5]) != "after" {
-		t.Errorf("after-image mismatch")
+	undone := wal.ApplyDeltaUndo(&after, records[0].DeltaData)
+	if string(undone[:6]) != "before" {
+		t.Errorf("delta undo mismatch")
 	}
 }
 

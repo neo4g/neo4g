@@ -16,10 +16,11 @@ import (
 
 // Record types.
 const (
-	RecordUpdate     byte = 1
-	RecordCommit     byte = 2
-	RecordAbort      byte = 3
-	RecordCheckpoint byte = 4
+	RecordUpdate      byte = 1
+	RecordCommit      byte = 2
+	RecordAbort       byte = 3
+	RecordCheckpoint  byte = 4
+	RecordUpdateDelta byte = 5 // delta-compressed page update
 )
 
 const recordHeaderSize = 25 // LSN(8) + TxID(8) + Type(1) + PageID(4) + DataLen(4)
@@ -33,8 +34,9 @@ type Record struct {
 	TxID       storage.TxID
 	Type       byte
 	PageID     storage.PageID
-	BeforeData []byte
-	AfterData  []byte
+	BeforeData []byte // full before-image (RecordUpdate only)
+	AfterData  []byte // full after-image (RecordUpdate only)
+	DeltaData  []byte // compressed delta (RecordUpdateDelta only)
 }
 
 // WAL manages the write-ahead log file.
@@ -83,18 +85,19 @@ func (w *WAL) Close() error {
 	return w.file.Close()
 }
 
-// LogUpdate writes an UPDATE record for a page modification.
+// LogUpdate writes a delta-compressed UPDATE record for a page modification.
 func (w *WAL) LogUpdate(txID storage.TxID, pageID storage.PageID, before, after *storage.Page) (LSN, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	delta := EncodeDelta(before, after)
+
 	rec := Record{
-		LSN:        w.nextLSN,
-		TxID:       txID,
-		Type:       RecordUpdate,
-		PageID:     pageID,
-		BeforeData: before[:],
-		AfterData:  after[:],
+		LSN:       w.nextLSN,
+		TxID:      txID,
+		Type:      RecordUpdateDelta,
+		PageID:    pageID,
+		DeltaData: delta,
 	}
 
 	if err := w.writeRecord(&rec); err != nil {
@@ -210,7 +213,13 @@ func (w *WAL) Truncate() error {
 // --- Internal helpers ---
 
 func (w *WAL) writeRecord(rec *Record) error {
-	dataLen := len(rec.BeforeData) + len(rec.AfterData)
+	var dataLen int
+	switch rec.Type {
+	case RecordUpdateDelta:
+		dataLen = len(rec.DeltaData)
+	case RecordUpdate:
+		dataLen = len(rec.BeforeData) + len(rec.AfterData)
+	}
 
 	header := make([]byte, recordHeaderSize)
 	binary.LittleEndian.PutUint64(header[0:], uint64(rec.LSN))
@@ -223,15 +232,23 @@ func (w *WAL) writeRecord(rec *Record) error {
 		return err
 	}
 
-	if len(rec.BeforeData) > 0 {
-		if _, err := w.file.Write(rec.BeforeData); err != nil {
-			return err
+	switch rec.Type {
+	case RecordUpdateDelta:
+		if len(rec.DeltaData) > 0 {
+			if _, err := w.file.Write(rec.DeltaData); err != nil {
+				return err
+			}
 		}
-	}
-
-	if len(rec.AfterData) > 0 {
-		if _, err := w.file.Write(rec.AfterData); err != nil {
-			return err
+	case RecordUpdate:
+		if len(rec.BeforeData) > 0 {
+			if _, err := w.file.Write(rec.BeforeData); err != nil {
+				return err
+			}
+		}
+		if len(rec.AfterData) > 0 {
+			if _, err := w.file.Write(rec.AfterData); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -253,7 +270,8 @@ func (w *WAL) readRecord() (Record, error) {
 
 	dataLen := int(binary.LittleEndian.Uint32(header[21:]))
 	if dataLen > 0 {
-		if rec.Type == RecordUpdate {
+		switch rec.Type {
+		case RecordUpdate:
 			rec.BeforeData = make([]byte, storage.PageSize)
 			if _, err := io.ReadFull(w.file, rec.BeforeData); err != nil {
 				return rec, err
@@ -262,7 +280,12 @@ func (w *WAL) readRecord() (Record, error) {
 			if _, err := io.ReadFull(w.file, rec.AfterData); err != nil {
 				return rec, err
 			}
-		} else {
+		case RecordUpdateDelta:
+			rec.DeltaData = make([]byte, dataLen)
+			if _, err := io.ReadFull(w.file, rec.DeltaData); err != nil {
+				return rec, err
+			}
+		default:
 			buf := make([]byte, dataLen)
 			if _, err := io.ReadFull(w.file, buf); err != nil {
 				return rec, err

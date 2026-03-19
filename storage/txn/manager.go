@@ -156,12 +156,10 @@ func (tm *Manager) Abort(txID storage.TxID) error {
 
 	for i := len(records) - 1; i >= 0; i-- {
 		rec := records[i]
-		if rec.TxID != txID || rec.Type != wal.RecordUpdate {
+		if rec.TxID != txID || !isUpdateRecord(rec.Type) {
 			continue
 		}
-		var beforePage storage.Page
-		copy(beforePage[:], rec.BeforeData)
-		if err := tm.disk.WritePage(rec.PageID, &beforePage); err != nil {
+		if err := undoPage(tm.disk, rec); err != nil {
 			return fmt.Errorf("undo page %d: %w", rec.PageID, err)
 		}
 	}

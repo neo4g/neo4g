@@ -1,7 +1,9 @@
 package pool
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/seankohjs/neo4g/storage"
@@ -176,5 +178,57 @@ func TestPoolFlushPage(t *testing.T) {
 	diskPage, _ := dm.ReadPage(id)
 	if string(diskPage[:8]) != "flush me" {
 		t.Errorf("expected 'flush me' on disk, got %q", string(diskPage[:8]))
+	}
+}
+
+func TestConcurrentFetchUnpin(t *testing.T) {
+	bp, _ := newTestPool(t, 64)
+
+	// Pre-populate pages
+	const numPages = 20
+	ids := make([]storage.PageID, numPages)
+	for i := range numPages {
+		id, p, err := bp.NewPage()
+		if err != nil {
+			t.Fatalf("NewPage %d: %v", i, err)
+		}
+		copy(p[:], fmt.Sprintf("page-%02d", i))
+		bp.UnpinPage(id, true)
+		ids[i] = id
+	}
+	bp.FlushAll()
+
+	// Hammer concurrent reads
+	const goroutines = 50
+	const iters = 200
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines*iters)
+
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range iters {
+				idx := (g*iters + i) % numPages
+				p, err := bp.FetchPage(ids[idx])
+				if err != nil {
+					errs <- fmt.Errorf("goroutine %d iter %d FetchPage(%d): %w", g, i, ids[idx], err)
+					continue
+				}
+				expected := fmt.Sprintf("page-%02d", idx)
+				if string(p[:len(expected)]) != expected {
+					errs <- fmt.Errorf("goroutine %d: expected %q, got %q", g, expected, string(p[:len(expected)]))
+				}
+				if err := bp.UnpinPage(ids[idx], false); err != nil {
+					errs <- fmt.Errorf("goroutine %d UnpinPage: %w", g, err)
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }

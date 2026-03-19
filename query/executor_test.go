@@ -387,3 +387,44 @@ func TestMatchMultiplePatternsParallel(t *testing.T) {
 		t.Errorf("unexpected row: %v", res.Rows[0])
 	}
 }
+
+func TestPredicatePushdown(t *testing.T) {
+	ex := testExecutor(t)
+
+	// Create 100 nodes — without pushdown, cross-product is 100*100 = 10,000 rows
+	for i := 0; i < 100; i++ {
+		execute(t, ex, fmt.Sprintf(`CREATE (n:Item {idx: %d})`, i), nil)
+	}
+
+	// Multi-pattern MATCH with equality filters on both variables
+	res := execute(t, ex, `MATCH (a:Item), (b:Item) WHERE a.idx = 7 AND b.idx = 42 RETURN a.idx, b.idx`, nil)
+	if len(res.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(res.Rows))
+	}
+	if res.Rows[0]["a.idx"] != int64(7) {
+		t.Errorf("expected a.idx=7, got %v", res.Rows[0]["a.idx"])
+	}
+	if res.Rows[0]["b.idx"] != int64(42) {
+		t.Errorf("expected b.idx=42, got %v", res.Rows[0]["b.idx"])
+	}
+
+	// With param pushdown
+	res = execute(t, ex, `MATCH (a:Item), (b:Item) WHERE a.idx = $x AND b.idx = $y RETURN a.idx, b.idx`,
+		map[string]interface{}{"x": int64(3), "y": int64(99)})
+	if len(res.Rows) != 1 {
+		t.Fatalf("expected 1 row with params, got %d", len(res.Rows))
+	}
+
+	// Mixed: one pushable, one non-pushable (OR is not extractable)
+	res = execute(t, ex, `MATCH (a:Item) WHERE a.idx = 0 OR a.idx = 1 RETURN a.idx`, nil)
+	if len(res.Rows) != 2 {
+		t.Fatalf("expected 2 rows for OR, got %d", len(res.Rows))
+	}
+
+	// Edge creation with pushdown should produce exactly 1 edge
+	execute(t, ex, `MATCH (a:Item), (b:Item) WHERE a.idx = 10 AND b.idx = 20 CREATE (a)-[:LINK]->(b)`, nil)
+	res = execute(t, ex, `MATCH (a:Item)-[:LINK]->(b:Item) RETURN a.idx, b.idx`, nil)
+	if len(res.Rows) != 1 {
+		t.Fatalf("expected 1 edge, got %d", len(res.Rows))
+	}
+}

@@ -53,10 +53,119 @@ func (ex *Executor) Execute(stmt *parser.Statement, params map[string]interface{
 	}
 }
 
+// --- Predicate pushdown ---
+
+type propFilter struct {
+	key string
+	val interface{}
+}
+
+// extractPredicates decomposes a WHERE expression into per-variable property
+// equality filters that can be pushed down into ScanNodes, and a residual
+// expression that must still be evaluated after the cross-product.
+func extractPredicates(where parser.Expr, params map[string]interface{}, patternVars map[string]bool) (map[string][]propFilter, parser.Expr) {
+	if where == nil {
+		return nil, nil
+	}
+	filters := make(map[string][]propFilter)
+	residual := extractRec(where, params, filters, patternVars)
+	if len(filters) == 0 {
+		return nil, where
+	}
+	return filters, residual
+}
+
+func extractRec(e parser.Expr, params map[string]interface{}, out map[string][]propFilter, vars map[string]bool) parser.Expr {
+	bin, ok := e.(*parser.BinaryExpr)
+	if !ok {
+		return e
+	}
+
+	if bin.Op == parser.AND {
+		left := extractRec(bin.Left, params, out, vars)
+		right := extractRec(bin.Right, params, out, vars)
+		if left == nil && right == nil {
+			return nil
+		}
+		if left == nil {
+			return right
+		}
+		if right == nil {
+			return left
+		}
+		return &parser.BinaryExpr{Op: parser.AND, Left: left, Right: right}
+	}
+
+	if bin.Op != parser.EQ {
+		return e
+	}
+
+	prop, val := matchEqPredicate(bin, params)
+	if prop == nil || !vars[prop.Variable] {
+		return e
+	}
+
+	out[prop.Variable] = append(out[prop.Variable], propFilter{key: prop.Key, val: val})
+	return nil
+}
+
+func matchEqPredicate(bin *parser.BinaryExpr, params map[string]interface{}) (*parser.PropExpr, interface{}) {
+	// prop = literal | literal = prop | prop = $param | $param = prop
+	if prop, ok := bin.Left.(*parser.PropExpr); ok {
+		if v := constValue(bin.Right, params); v != nil {
+			return prop, v
+		}
+	}
+	if prop, ok := bin.Right.(*parser.PropExpr); ok {
+		if v := constValue(bin.Left, params); v != nil {
+			return prop, v
+		}
+	}
+	return nil, nil
+}
+
+func constValue(e parser.Expr, params map[string]interface{}) interface{} {
+	switch ex := e.(type) {
+	case *parser.LiteralExpr:
+		return ex.Value
+	case *parser.ParamExpr:
+		if v, ok := params[ex.Name]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func matchFilters(node *graph.Node, filters []propFilter) bool {
+	for _, f := range filters {
+		v, ok := node.Properties[f.key]
+		if !ok {
+			return false
+		}
+		if ValueToGo(v) != f.val {
+			return false
+		}
+	}
+	return true
+}
+
 // --- MATCH resolution ---
 
 func (ex *Executor) resolveMatch(mc *parser.MatchClause, params map[string]interface{}) ([]Row, error) {
-	// Resolve each pattern in parallel
+	// Collect known pattern variables for safe extraction
+	patVars := make(map[string]bool)
+	for _, pat := range mc.Patterns {
+		if len(pat.Elements) > 0 {
+			if np, ok := pat.Elements[0].(*parser.NodePattern); ok && np.Variable != "" {
+				patVars[np.Variable] = true
+			}
+		}
+	}
+
+	// Extract per-variable pushdown filters from WHERE
+	pushdown, residual := extractPredicates(mc.Where, params, patVars)
+
+	// Resolve each pattern in parallel, passing pushdown filters
 	patternRows := make([][]Row, len(mc.Patterns))
 	var g errgroup.Group
 	var mu sync.Mutex
@@ -64,7 +173,7 @@ func (ex *Executor) resolveMatch(mc *parser.MatchClause, params map[string]inter
 	for i, pat := range mc.Patterns {
 		i, pat := i, pat
 		g.Go(func() error {
-			rows, err := ex.resolvePattern(pat)
+			rows, err := ex.resolvePatternWithFilters(pat, pushdown)
 			if err != nil {
 				return err
 			}
@@ -85,11 +194,11 @@ func (ex *Executor) resolveMatch(mc *parser.MatchClause, params map[string]inter
 		rows = crossProduct(rows, patternRows[i])
 	}
 
-	// Apply WHERE filter
-	if mc.Where != nil {
+	// Apply residual WHERE filter (predicates that couldn't be pushed down)
+	if residual != nil {
 		var filtered []Row
 		for _, row := range rows {
-			val, err := evalExpr(mc.Where, row, params)
+			val, err := evalExpr(residual, row, params)
 			if err != nil {
 				return nil, fmt.Errorf("WHERE: %w", err)
 			}
@@ -126,25 +235,29 @@ func crossProduct(a, b []Row) []Row {
 	return out
 }
 
-// resolvePattern resolves a single pattern to rows.
-func (ex *Executor) resolvePattern(pat *parser.Pattern) ([]Row, error) {
+// resolvePatternWithFilters resolves a single pattern to rows, applying any
+// pushed-down property filters to the first node pattern.
+func (ex *Executor) resolvePatternWithFilters(pat *parser.Pattern, pushdown map[string][]propFilter) ([]Row, error) {
 	elems := pat.Elements
 	if len(elems) == 0 {
 		return nil, fmt.Errorf("empty pattern")
 	}
 
-	// Single node pattern: (n:Label)
 	first, ok := elems[0].(*parser.NodePattern)
 	if !ok {
 		return nil, fmt.Errorf("pattern must start with a node")
 	}
 
-	rows, err := ex.resolveNodePattern(first)
+	var filters []propFilter
+	if pushdown != nil && first.Variable != "" {
+		filters = pushdown[first.Variable]
+	}
+
+	rows, err := ex.resolveNodePattern(first, filters)
 	if err != nil {
 		return nil, err
 	}
 
-	// Walk edge-node pairs: -[e:TYPE]->(m)
 	for i := 1; i+1 < len(elems); i += 2 {
 		ep, ok := elems[i].(*parser.EdgePattern)
 		if !ok {
@@ -164,16 +277,18 @@ func (ex *Executor) resolvePattern(pat *parser.Pattern) ([]Row, error) {
 	return rows, nil
 }
 
-func (ex *Executor) resolveNodePattern(np *parser.NodePattern) ([]Row, error) {
+func (ex *Executor) resolveNodePattern(np *parser.NodePattern, filters []propFilter) ([]Row, error) {
 	nodes, err := ex.scanner.ScanNodes(np.Labels)
 	if err != nil {
 		return nil, fmt.Errorf("scan nodes: %w", err)
 	}
 
-	// Filter by inline properties if present
 	var rows []Row
 	for _, n := range nodes {
 		if np.Properties != nil && !matchProps(n.Properties, np.Properties) {
+			continue
+		}
+		if len(filters) > 0 && !matchFilters(n, filters) {
 			continue
 		}
 		row := make(Row)

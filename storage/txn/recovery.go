@@ -8,6 +8,44 @@ import (
 	"github.com/seankohjs/neo4g/storage/wal"
 )
 
+func isUpdateRecord(t byte) bool {
+	return t == wal.RecordUpdate || t == wal.RecordUpdateDelta
+}
+
+func redoPage(dm *disk.Manager, rec wal.Record) error {
+	switch rec.Type {
+	case wal.RecordUpdate:
+		var afterPage storage.Page
+		copy(afterPage[:], rec.AfterData)
+		return dm.WritePage(rec.PageID, &afterPage)
+	case wal.RecordUpdateDelta:
+		current, err := dm.ReadPage(rec.PageID)
+		if err != nil {
+			return err
+		}
+		after := wal.ApplyDelta(current, rec.DeltaData)
+		return dm.WritePage(rec.PageID, &after)
+	}
+	return nil
+}
+
+func undoPage(dm *disk.Manager, rec wal.Record) error {
+	switch rec.Type {
+	case wal.RecordUpdate:
+		var beforePage storage.Page
+		copy(beforePage[:], rec.BeforeData)
+		return dm.WritePage(rec.PageID, &beforePage)
+	case wal.RecordUpdateDelta:
+		current, err := dm.ReadPage(rec.PageID)
+		if err != nil {
+			return err
+		}
+		before := wal.ApplyDeltaUndo(current, rec.DeltaData)
+		return dm.WritePage(rec.PageID, &before)
+	}
+	return nil
+}
+
 // Recover performs crash recovery by replaying the WAL.
 // It should be called at database startup before any operations.
 //
@@ -37,16 +75,13 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 	// --- Redo phase ---
 	redoneSet := make(map[storage.TxID]bool)
 	for _, rec := range records {
-		if rec.Type != wal.RecordUpdate {
+		if !isUpdateRecord(rec.Type) {
 			continue
 		}
 		if !committed[rec.TxID] {
 			continue
 		}
-
-		var afterPage storage.Page
-		copy(afterPage[:], rec.AfterData)
-		if err := dm.WritePage(rec.PageID, &afterPage); err != nil {
+		if err := redoPage(dm, rec); err != nil {
 			return redone, undone, fmt.Errorf("redo page %d (tx %d): %w", rec.PageID, rec.TxID, err)
 		}
 		redoneSet[rec.TxID] = true
@@ -57,16 +92,13 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 	undoneSet := make(map[storage.TxID]bool)
 	for i := len(records) - 1; i >= 0; i-- {
 		rec := records[i]
-		if rec.Type != wal.RecordUpdate {
+		if !isUpdateRecord(rec.Type) {
 			continue
 		}
 		if committed[rec.TxID] || aborted[rec.TxID] {
 			continue
 		}
-
-		var beforePage storage.Page
-		copy(beforePage[:], rec.BeforeData)
-		if err := dm.WritePage(rec.PageID, &beforePage); err != nil {
+		if err := undoPage(dm, rec); err != nil {
 			return redone, undone, fmt.Errorf("undo page %d (tx %d): %w", rec.PageID, rec.TxID, err)
 		}
 		undoneSet[rec.TxID] = true

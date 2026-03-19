@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/seankohjs/neo4g/storage"
 	"github.com/seankohjs/neo4g/storage/disk"
@@ -16,17 +17,19 @@ var _ storage.PageManager = (*Pool)(nil)
 type frame struct {
 	page     storage.Page
 	pageID   storage.PageID
-	pinCount int
-	dirty    bool
-	refBit   bool
-	valid    bool
+	pinCount atomic.Int32
+	dirty    atomic.Bool
+	refBit   atomic.Bool
+	valid    bool // only mutated under write lock
 }
 
 // Pool is an in-memory cache of disk pages with clock-sweep eviction.
 //
-// Thread safety: Pool is safe for concurrent use.
+// Thread safety: Pool is safe for concurrent use. Cache hits on FetchPage use
+// a read lock for maximum concurrency; misses, evictions, and mutations take
+// the write lock.
 type Pool struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	disk  *disk.Manager
 	pages []frame
 	index map[storage.PageID]int
@@ -45,13 +48,26 @@ func New(dm *disk.Manager, poolSize int) *Pool {
 // FetchPage returns the page with the given ID, loading it from disk if not
 // already cached. The page is pinned — the caller MUST call UnpinPage when done.
 func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
+	// Fast path: cache hit under read lock
+	bp.mu.RLock()
+	if idx, ok := bp.index[id]; ok {
+		f := &bp.pages[idx]
+		f.pinCount.Add(1)
+		f.refBit.Store(true)
+		bp.mu.RUnlock()
+		return &f.page, nil
+	}
+	bp.mu.RUnlock()
+
+	// Slow path: cache miss — acquire write lock
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 
+	// Double-check: another goroutine may have loaded it
 	if idx, ok := bp.index[id]; ok {
 		f := &bp.pages[idx]
-		f.pinCount++
-		f.refBit = true
+		f.pinCount.Add(1)
+		f.refBit.Store(true)
 		return &f.page, nil
 	}
 
@@ -75,9 +91,9 @@ func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
 
 	f.page = *p
 	f.pageID = id
-	f.pinCount = 1
-	f.dirty = false
-	f.refBit = true
+	f.pinCount.Store(1)
+	f.dirty.Store(false)
+	f.refBit.Store(true)
 	f.valid = true
 	bp.index[id] = idx
 
@@ -87,22 +103,24 @@ func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
 // UnpinPage decrements the pin count on a page. If dirty is true, the page is
 // marked dirty so it will be flushed to disk before eviction.
 func (bp *Pool) UnpinPage(id storage.PageID, dirty bool) error {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-
+	bp.mu.RLock()
 	idx, ok := bp.index[id]
 	if !ok {
+		bp.mu.RUnlock()
 		return fmt.Errorf("page %d not in buffer pool", id)
 	}
 
 	f := &bp.pages[idx]
-	if f.pinCount <= 0 {
-		return fmt.Errorf("page %d already unpinned (pin count = %d)", id, f.pinCount)
-	}
-
-	f.pinCount--
+	newPin := f.pinCount.Add(-1)
 	if dirty {
-		f.dirty = true
+		f.dirty.Store(true)
+	}
+	bp.mu.RUnlock()
+
+	if newPin < 0 {
+		// Restore and report error
+		f.pinCount.Add(1)
+		return fmt.Errorf("page %d already unpinned (pin count = %d)", id, newPin)
 	}
 	return nil
 }
@@ -133,9 +151,9 @@ func (bp *Pool) NewPage() (storage.PageID, *storage.Page, error) {
 
 	f.page = *diskPage
 	f.pageID = id
-	f.pinCount = 1
-	f.dirty = false
-	f.refBit = true
+	f.pinCount.Store(1)
+	f.dirty.Store(false)
+	f.refBit.Store(true)
 	f.valid = true
 	bp.index[id] = idx
 
@@ -153,11 +171,11 @@ func (bp *Pool) FlushPage(id storage.PageID) error {
 	}
 
 	f := &bp.pages[idx]
-	if f.dirty {
+	if f.dirty.Load() {
 		if err := bp.disk.WritePage(id, &f.page); err != nil {
 			return fmt.Errorf("flush page %d: %w", id, err)
 		}
-		f.dirty = false
+		f.dirty.Store(false)
 	}
 	return nil
 }
@@ -169,17 +187,17 @@ func (bp *Pool) FlushAll() error {
 
 	for i := range bp.pages {
 		f := &bp.pages[i]
-		if f.valid && f.dirty {
+		if f.valid && f.dirty.Load() {
 			if err := bp.disk.WritePage(f.pageID, &f.page); err != nil {
 				return fmt.Errorf("flush page %d: %w", f.pageID, err)
 			}
-			f.dirty = false
+			f.dirty.Store(false)
 		}
 	}
 	return nil
 }
 
-// --- Internal helpers (caller must hold bp.mu) ---
+// --- Internal helpers (caller must hold bp.mu write lock) ---
 
 func (bp *Pool) findVictim() (int, error) {
 	n := len(bp.pages)
@@ -192,13 +210,13 @@ func (bp *Pool) findVictim() (int, error) {
 
 	for range 2 * n {
 		f := &bp.pages[bp.clock]
-		if f.pinCount == 0 {
-			if !f.refBit {
+		if f.pinCount.Load() == 0 {
+			if !f.refBit.Load() {
 				victim := bp.clock
 				bp.clock = (bp.clock + 1) % n
 				return victim, nil
 			}
-			f.refBit = false
+			f.refBit.Store(false)
 		}
 		bp.clock = (bp.clock + 1) % n
 	}
@@ -208,14 +226,14 @@ func (bp *Pool) findVictim() (int, error) {
 
 func (bp *Pool) evict(idx int) error {
 	f := &bp.pages[idx]
-	if f.dirty {
+	if f.dirty.Load() {
 		if err := bp.disk.WritePage(f.pageID, &f.page); err != nil {
 			return err
 		}
 	}
 	delete(bp.index, f.pageID)
 	f.valid = false
-	f.dirty = false
-	f.pinCount = 0
+	f.dirty.Store(false)
+	f.pinCount.Store(0)
 	return nil
 }
