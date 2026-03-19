@@ -15,7 +15,7 @@ A minimal Neo4j-equivalent graph database engine in Go (CS464). Property graph m
 ┌─────────────────────────────────────┐
 │  Protocol (Local / HTTP)            │  server/     ← future
 ├─────────────────────────────────────┤
-│  Query Language (Cypher-lite)       │  query/      ← future
+│  Query Language (Cypher-lite)       │  query/      ← lexer + parser done
 ├─────────────────────────────────────┤
 │  Query Engine    │  Write Engine    │  record/ + index/ + txn/
 ├─────────────────────────────────────┤

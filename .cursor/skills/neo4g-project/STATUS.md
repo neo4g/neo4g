@@ -23,7 +23,7 @@
 | **Index root persistence** | `storage/disk/` + `storage/index/` | `done` | 4 roots + 4 page chain pointers in header |
 | **Formal interfaces** | `storage/` | `done` | Store, Scanner, Index, PageManager in storage/ifaces.go |
 | **Scanner methods** | `storage/record/` | `done` | ScanNodes, ScanEdges, Expand |
-| **Query language** | `query/` | `not-started` | Cypher-lite parser, AST |
+| **Query language** | `query/` | `done` | Cypher-lite lexer + recursive-descent parser; tokens, AST, full test suite |
 | **Query planner** | `query/` | `not-started` | Logical → physical plan |
 | **Query executor** | `query/` | `not-started` | Iterator-based execution |
 | **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
@@ -47,3 +47,4 @@
 - 2026-03-19: Server engine layer — Config from env vars, Engine open/close/recovery lifecycle, reopen persistence (`server/`)
 - 2026-03-19: HTTP + concurrency layer — RWMutex for concurrent reads, Server struct with graceful shutdown (`server/handler.go`, `server/http.go`, `storage/record/manager.go`)
 - 2026-03-19: Simplified HTTP API — replaced 11 CRUD routes with single `POST /api/query` endpoint; query engine stub for future parser/executor wiring
+- 2026-03-19: Cypher-lite query parser — hand-written lexer, recursive-descent parser, full AST (CREATE/MATCH/WHERE/RETURN/SET/DELETE, node/edge patterns, expressions) (`query/`)
