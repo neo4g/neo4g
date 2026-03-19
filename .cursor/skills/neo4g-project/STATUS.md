@@ -27,6 +27,8 @@
 | **Query planner** | `query/` | `not-started` | Logical → physical plan |
 | **Query executor** | `query/` | `not-started` | Iterator-based execution |
 | **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
+| **HTTP API** | `server/` | `done` | Single `POST /api/query` endpoint (stub), graceful shutdown; query engine not wired yet |
+| **Concurrent reads** | `storage/record/` | `done` | RWMutex upgrade — readers run in parallel, writers serialize |
 
 ## Status Legend
 
@@ -43,3 +45,5 @@
 - 2026-03-19: Created project skill with status tracker
 - 2026-03-19: Wired storage layers — index root persistence, RecordManager↔Index, RecordManager↔Txn, scanners, formal interfaces (`storage/disk`, `storage/index`, `storage/record`, `storage/pool`, `storage/ifaces.go`)
 - 2026-03-19: Server engine layer — Config from env vars, Engine open/close/recovery lifecycle, reopen persistence (`server/`)
+- 2026-03-19: HTTP + concurrency layer — RWMutex for concurrent reads, Server struct with graceful shutdown (`server/handler.go`, `server/http.go`, `storage/record/manager.go`)
+- 2026-03-19: Simplified HTTP API — replaced 11 CRUD routes with single `POST /api/query` endpoint; query engine stub for future parser/executor wiring

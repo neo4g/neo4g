@@ -25,7 +25,7 @@ var (
 //
 // Thread safety: Manager is safe for concurrent use.
 type Manager struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	pool *pool.Pool
 	disk *disk.Manager
 	idx  *index.Manager
@@ -162,8 +162,8 @@ func (rm *Manager) CreateNode(labels []string, props map[string]graph.Value) (ni
 
 // GetNode retrieves a node by its ID.
 func (rm *Manager) GetNode(id graph.NodeID) (*graph.Node, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	rid, ok := rm.idx.NodeIndex.Search(uint64(id))
 	if !ok {
@@ -320,8 +320,8 @@ func (rm *Manager) CreateEdge(edgeType string, src, dst graph.NodeID, props map[
 
 // GetEdge retrieves an edge by its ID.
 func (rm *Manager) GetEdge(id graph.EdgeID) (*graph.Edge, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	rid, ok := rm.idx.EdgeIndex.Search(uint64(id))
 	if !ok {
@@ -338,8 +338,8 @@ func (rm *Manager) GetEdge(id graph.EdgeID) (*graph.Edge, error) {
 
 // GetEdges returns all edges connected to a node in the specified direction.
 func (rm *Manager) GetEdges(nodeID graph.NodeID, dir graph.Direction) ([]*graph.Edge, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	start := index.AdjacencyRangeStart(nodeID)
 	end := index.AdjacencyRangeEnd(nodeID)
@@ -407,8 +407,8 @@ func (rm *Manager) DeleteEdge(id graph.EdgeID) (err error) {
 // ScanNodes walks the node page chain and returns all nodes whose labels
 // intersect with the given set. An empty labels slice returns all nodes.
 func (rm *Manager) ScanNodes(labels []string) ([]*graph.Node, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	labelSet := make(map[string]struct{}, len(labels))
 	for _, l := range labels {
@@ -462,8 +462,8 @@ func nodeMatchesLabels(node *graph.Node, labelSet map[string]struct{}) bool {
 // ScanEdges walks the edge page chain and returns all edges matching the
 // given type. An empty typ returns all edges.
 func (rm *Manager) ScanEdges(typ string) ([]*graph.Edge, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	var edges []*graph.Edge
 	pageID := rm.edgePageHead
@@ -504,8 +504,8 @@ func (rm *Manager) ScanEdges(typ string) ([]*graph.Edge, error) {
 // optionally filtered by edgeType (empty = all types).
 // Uses the adjacency B+Tree index for efficient lookup.
 func (rm *Manager) Expand(nodeID graph.NodeID, dir graph.Direction, edgeType string) ([]*graph.Edge, error) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
 
 	start := index.AdjacencyRangeStart(nodeID)
 	end := index.AdjacencyRangeEnd(nodeID)
