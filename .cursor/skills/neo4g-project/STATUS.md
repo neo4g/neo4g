@@ -26,7 +26,7 @@
 | **Query language** | `query/` | `not-started` | Cypher-lite parser, AST |
 | **Query planner** | `query/` | `not-started` | Logical → physical plan |
 | **Query executor** | `query/` | `not-started` | Iterator-based execution |
-| **Server / protocol** | `server/` | `not-started` | Local or HTTP access |
+| **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
 
 ## Status Legend
 
@@ -42,3 +42,4 @@
 - 2026-03-19: Initial project reorganization into layered sub-packages (`graph/`, `storage/*`)
 - 2026-03-19: Created project skill with status tracker
 - 2026-03-19: Wired storage layers — index root persistence, RecordManager↔Index, RecordManager↔Txn, scanners, formal interfaces (`storage/disk`, `storage/index`, `storage/record`, `storage/pool`, `storage/ifaces.go`)
+- 2026-03-19: Server engine layer — Config from env vars, Engine open/close/recovery lifecycle, reopen persistence (`server/`)
