@@ -170,6 +170,36 @@ run_phase "Write (seq)" "$NODES" "$TIMINGS" "$ELAPSED"
 echo "  Done: $NODES writes in $LAST_ELAPSED"
 
 # ══════════════════════════════════════════════════════════════════════
+# Phase 1b: Concurrent writes
+# ══════════════════════════════════════════════════════════════════════
+WRITES_PER_WORKER=$((NODES / WORKERS))
+TOTAL_CONCURRENT_WRITES=$((WORKERS * WRITES_PER_WORKER))
+echo "Phase 1b: Concurrent writes ($WORKERS workers x $WRITES_PER_WORKER creates = $TOTAL_CONCURRENT_WRITES)..."
+> "$TIMINGS"
+START=$(now_seconds)
+
+PIDS=""
+for w in $(seq 1 "$WORKERS"); do
+    (
+        BASE=$((NODES + (w - 1) * WRITES_PER_WORKER))
+        for j in $(seq 1 "$WRITES_PER_WORKER"); do
+            IDX=$((BASE + j))
+            query "CREATE (n:CWrite {idx: $IDX, payload: 'cw-$IDX'})"
+        done
+    ) >> "$TMPDIR_BENCH/cwrite_${w}.txt" < /dev/null &
+    PIDS="$PIDS $!"
+done
+for pid in $PIDS; do wait "$pid"; done
+
+cat "$TMPDIR_BENCH"/cwrite_*.txt > "$TIMINGS"
+rm -f "$TMPDIR_BENCH"/cwrite_*.txt
+
+END=$(now_seconds)
+ELAPSED=$(awk "BEGIN { print $END - $START }")
+run_phase "Write (${WORKERS}w)" "$TOTAL_CONCURRENT_WRITES" "$TIMINGS" "$ELAPSED"
+echo "  Done: $TOTAL_CONCURRENT_WRITES writes in $LAST_ELAPSED"
+
+# ══════════════════════════════════════════════════════════════════════
 # Phase 2: Sequential reads
 # ══════════════════════════════════════════════════════════════════════
 echo "Phase 2: Read throughput ($NODES sequential MATCHes)..."

@@ -5,6 +5,7 @@
 package wal
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -45,6 +46,7 @@ type Record struct {
 type WAL struct {
 	mu      sync.Mutex
 	file    *os.File
+	buf     *bufio.Writer
 	nextLSN LSN
 }
 
@@ -75,6 +77,13 @@ func Open(path string) (*WAL, error) {
 		w.nextLSN = lastLSN + 1
 	}
 
+	// Seek to end so buffered writes append correctly
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		file.Close()
+		return nil, err
+	}
+	w.buf = bufio.NewWriter(file)
+
 	return w, nil
 }
 
@@ -82,6 +91,10 @@ func Open(path string) (*WAL, error) {
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := w.buf.Flush(); err != nil {
+		w.file.Close()
+		return err
+	}
 	return w.file.Close()
 }
 
@@ -172,6 +185,9 @@ func (w *WAL) LogCheckpoint() (LSN, error) {
 func (w *WAL) Sync() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := w.buf.Flush(); err != nil {
+		return err
+	}
 	return w.file.Sync()
 }
 
@@ -180,6 +196,9 @@ func (w *WAL) ReadAll() ([]Record, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if err := w.buf.Flush(); err != nil {
+		return nil, err
+	}
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -195,6 +214,13 @@ func (w *WAL) ReadAll() ([]Record, error) {
 		}
 		records = append(records, rec)
 	}
+
+	// Seek back to end so subsequent buffered writes append correctly
+	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+		return records, err
+	}
+	w.buf.Reset(w.file)
+
 	return records, nil
 }
 
@@ -206,8 +232,11 @@ func (w *WAL) Truncate() error {
 	if err := w.file.Truncate(0); err != nil {
 		return err
 	}
-	_, err := w.file.Seek(0, io.SeekStart)
-	return err
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	w.buf.Reset(w.file) // reset buffer to point at truncated file
+	return nil
 }
 
 // --- Internal helpers ---
@@ -228,25 +257,25 @@ func (w *WAL) writeRecord(rec *Record) error {
 	binary.LittleEndian.PutUint32(header[17:], uint32(rec.PageID))
 	binary.LittleEndian.PutUint32(header[21:], uint32(dataLen))
 
-	if _, err := w.file.Write(header); err != nil {
+	if _, err := w.buf.Write(header); err != nil {
 		return err
 	}
 
 	switch rec.Type {
 	case RecordUpdateDelta:
 		if len(rec.DeltaData) > 0 {
-			if _, err := w.file.Write(rec.DeltaData); err != nil {
+			if _, err := w.buf.Write(rec.DeltaData); err != nil {
 				return err
 			}
 		}
 	case RecordUpdate:
 		if len(rec.BeforeData) > 0 {
-			if _, err := w.file.Write(rec.BeforeData); err != nil {
+			if _, err := w.buf.Write(rec.BeforeData); err != nil {
 				return err
 			}
 		}
 		if len(rec.AfterData) > 0 {
-			if _, err := w.file.Write(rec.AfterData); err != nil {
+			if _, err := w.buf.Write(rec.AfterData); err != nil {
 				return err
 			}
 		}
