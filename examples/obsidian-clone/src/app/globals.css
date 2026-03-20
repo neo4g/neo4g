@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3d3d3d #1e1e1e;
+}
+
+::selection {
+  background-color: rgba(124, 106, 247, 0.3);
+}
+
+textarea:focus,
+input:focus {
+  outline: none;
+}
