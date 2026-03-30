@@ -16,7 +16,7 @@ export async function GET(
       const outResult = await query(
         `MATCH (n)-[:LINKS_TO]->(m) WHERE id(n) = ${id} RETURN m`
       );
-      outgoing = outResult.rows.map((row) => {
+      outgoing = (outResult.rows || []).map((row) => {
         const note = nodeToNote(row.m as NeoNode);
         return { id: note.id, title: note.title };
       });
@@ -29,7 +29,7 @@ export async function GET(
       const inResult = await query(
         `MATCH (m)-[:LINKS_TO]->(n) WHERE id(n) = ${id} RETURN m`
       );
-      incoming = inResult.rows.map((row) => {
+      incoming = (inResult.rows || []).map((row) => {
         const note = nodeToNote(row.m as NeoNode);
         return { id: note.id, title: note.title };
       });

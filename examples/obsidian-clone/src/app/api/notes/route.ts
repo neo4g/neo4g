@@ -4,7 +4,7 @@ import { query, nodeToNote, type NeoNode } from "@/lib/neo4g";
 export async function GET() {
   try {
     const result = await query('MATCH (n:Note) RETURN n');
-    const notes = result.rows.map((row) => nodeToNote(row.n as NeoNode));
+    const notes = (result.rows || []).map((row) => nodeToNote(row.n as NeoNode));
     notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return NextResponse.json(notes);
   } catch (err) {
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     }
     // Fetch the latest note by scanning all
     const all = await query('MATCH (n:Note) RETURN n');
-    const notes = all.rows.map((row) => nodeToNote(row.n as NeoNode));
+    const notes = (all.rows || []).map((row) => nodeToNote(row.n as NeoNode));
     notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return NextResponse.json(notes[0]);
   } catch (err) {

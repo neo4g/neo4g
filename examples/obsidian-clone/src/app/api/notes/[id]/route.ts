@@ -10,7 +10,7 @@ export async function GET(
     const result = await query(
       `MATCH (n) WHERE id(n) = ${id} RETURN n`
     );
-    if (result.rows.length === 0) {
+    if (!result.rows || result.rows.length === 0) {
       return NextResponse.json({ error: "Note not found" }, { status: 404 });
     }
     return NextResponse.json(nodeToNote(result.rows[0].n as NeoNode));
@@ -44,7 +44,7 @@ export async function PUT(
       const existingLinks = await query(
         `MATCH (n)-[e:LINKS_TO]->(m) WHERE id(n) = ${id} RETURN e, m`
       );
-      for (const row of existingLinks.rows) {
+      for (const row of existingLinks.rows || []) {
         const target = row.m as NeoNode;
         await query(
           `MATCH (a)-[e:LINKS_TO]->(b) WHERE id(a) = ${id} AND id(b) = ${target.id} DELETE e`
@@ -97,7 +97,7 @@ export async function DELETE(
       const outgoing = await query(
         `MATCH (n)-[e:LINKS_TO]->(m) WHERE id(n) = ${id} RETURN e, m`
       );
-      for (const row of outgoing.rows) {
+      for (const row of outgoing.rows || []) {
         const target = row.m as NeoNode;
         await query(
           `MATCH (a)-[e:LINKS_TO]->(b) WHERE id(a) = ${id} AND id(b) = ${target.id} DELETE e`
@@ -112,7 +112,7 @@ export async function DELETE(
       const incoming = await query(
         `MATCH (m)-[e:LINKS_TO]->(n) WHERE id(n) = ${id} RETURN e, m`
       );
-      for (const row of incoming.rows) {
+      for (const row of incoming.rows || []) {
         const source = row.m as NeoNode;
         await query(
           `MATCH (a)-[e:LINKS_TO]->(b) WHERE id(a) = ${source.id} AND id(b) = ${id} DELETE e`
