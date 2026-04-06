@@ -224,6 +224,28 @@ func (w *WAL) ReadAll() ([]Record, error) {
 	return records, nil
 }
 
+// NextLSN returns the next LSN that will be assigned to a new record.
+func (w *WAL) NextLSN() LSN {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.nextLSN
+}
+
+// ReadFrom reads all WAL records with LSN >= fromLSN.
+func (w *WAL) ReadFrom(fromLSN LSN) ([]Record, error) {
+	all, err := w.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	var filtered []Record
+	for _, r := range all {
+		if r.LSN >= fromLSN {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
+}
+
 // Truncate removes all WAL records, resetting the file.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()

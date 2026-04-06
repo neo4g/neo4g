@@ -100,6 +100,15 @@ func (e *Engine) Store() storage.Store { return e.rm }
 // Scanner returns the read-path scan/expand interface.
 func (e *Engine) Scanner() storage.Scanner { return e.rm }
 
+// Pool returns the underlying buffer pool.
+func (e *Engine) Pool() *pool.Pool { return e.pool }
+
+// WAL returns the underlying write-ahead log, or nil if WAL is disabled.
+func (e *Engine) WAL() *wal.WAL { return e.w }
+
+// DiskManager returns the underlying disk manager.
+func (e *Engine) DiskManager() *disk.Manager { return e.dm }
+
 // Checkpoint forces a WAL checkpoint (flush + truncate). No-op if WAL is disabled.
 func (e *Engine) Checkpoint() error {
 	if e.txm == nil {

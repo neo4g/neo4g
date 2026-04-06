@@ -24,20 +24,29 @@ type Config struct {
 	ReadTimeout     time.Duration // max duration for reading request
 	WriteTimeout    time.Duration // max duration for writing response
 	ShutdownTimeout time.Duration // max duration for graceful shutdown drain
+
+	// Replication
+	NodeID           string        // unique node identifier (e.g. "node1")
+	Role             string        // "primary" or "replica"
+	PrimaryAddr      string        // address of primary (replicas pull WAL from here)
+	ReplPollInterval time.Duration // how often replicas poll for WAL records
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		DataDir:         "./data",
-		DBFile:          "neo4g.db",
-		WALEnabled:      true,
-		WALFile:         "neo4g.wal",
-		PoolSize:        1024,
-		ListenAddr:      ":7474",
-		ReadTimeout:     30 * time.Second,
-		WriteTimeout:    30 * time.Second,
-		ShutdownTimeout: 10 * time.Second,
+		DataDir:          "./data",
+		DBFile:           "neo4g.db",
+		WALEnabled:       true,
+		WALFile:          "neo4g.wal",
+		PoolSize:         1024,
+		ListenAddr:       ":7474",
+		ReadTimeout:      30 * time.Second,
+		WriteTimeout:     30 * time.Second,
+		ShutdownTimeout:  10 * time.Second,
+		NodeID:           "node1",
+		Role:             "primary",
+		ReplPollInterval: 500 * time.Millisecond,
 	}
 }
 
@@ -98,6 +107,21 @@ func ConfigFromEnv() Config {
 	if v := os.Getenv("NEO4G_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.ShutdownTimeout = d
+		}
+	}
+
+	if v := os.Getenv("NEO4G_NODE_ID"); v != "" {
+		cfg.NodeID = v
+	}
+	if v := os.Getenv("NEO4G_ROLE"); v != "" {
+		cfg.Role = strings.ToLower(v)
+	}
+	if v := os.Getenv("NEO4G_PRIMARY_ADDR"); v != "" {
+		cfg.PrimaryAddr = v
+	}
+	if v := os.Getenv("NEO4G_REPL_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.ReplPollInterval = d
 		}
 	}
 

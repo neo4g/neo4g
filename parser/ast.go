@@ -11,6 +11,11 @@ type Statement struct {
 	Return *ReturnClause
 }
 
+// IsReadOnly reports whether the statement only reads data (RETURN-only).
+func (s *Statement) IsReadOnly() bool {
+	return s.Create == nil && s.Set == nil && s.Delete == nil
+}
+
 // MatchClause represents MATCH pattern(, pattern)* (WHERE expr)?.
 type MatchClause struct {
 	Patterns []*Pattern

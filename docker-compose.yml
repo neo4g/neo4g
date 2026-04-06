@@ -1,0 +1,88 @@
+services:
+  node1:
+    build: .
+    entrypoint: ["neo4g"]
+    environment:
+      NEO4G_NODE_ID: node1
+      NEO4G_ROLE: primary
+      NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_DATA_DIR: /data/node1
+    volumes:
+      - node1-data:/data/node1
+    ports:
+      - "7474:7474"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474/api/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+
+  node2:
+    build: .
+    entrypoint: ["neo4g"]
+    environment:
+      NEO4G_NODE_ID: node2
+      NEO4G_ROLE: replica
+      NEO4G_PRIMARY_ADDR: http://node1:7474
+      NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_DATA_DIR: /data/node2
+      NEO4G_REPL_POLL_INTERVAL: 500ms
+    volumes:
+      - node2-data:/data/node2
+    ports:
+      - "7475:7474"
+    depends_on:
+      node1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474/api/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+
+  node3:
+    build: .
+    entrypoint: ["neo4g"]
+    environment:
+      NEO4G_NODE_ID: node3
+      NEO4G_ROLE: replica
+      NEO4G_PRIMARY_ADDR: http://node1:7474
+      NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_DATA_DIR: /data/node3
+      NEO4G_REPL_POLL_INTERVAL: 500ms
+    volumes:
+      - node3-data:/data/node3
+    ports:
+      - "7476:7474"
+    depends_on:
+      node1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474/api/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+
+  gateway:
+    build: .
+    entrypoint: ["neo4g-gateway"]
+    environment:
+      NEO4G_GW_LISTEN_ADDR: ":7480"
+      NEO4G_GW_NODES: "node1=http://node1:7474,node2=http://node2:7474,node3=http://node3:7474"
+      NEO4G_GW_HEARTBEAT_INTERVAL: 2s
+      NEO4G_GW_HEARTBEAT_TIMEOUT: 6s
+      NEO4G_GW_ELECTION_DELAY: 1s
+    ports:
+      - "7480:7480"
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
