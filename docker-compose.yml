@@ -8,7 +8,7 @@ services:
       NEO4G_LISTEN_ADDR: ":7474"
       NEO4G_DATA_DIR: /data/node1
     volumes:
-      - node1-data:/data/node1
+      - ./data/node1:/data/node1
     ports:
       - "7474:7474"
     healthcheck:
@@ -28,7 +28,7 @@ services:
       NEO4G_DATA_DIR: /data/node2
       NEO4G_REPL_POLL_INTERVAL: 500ms
     volumes:
-      - node2-data:/data/node2
+      - ./data/node2:/data/node2
     ports:
       - "7475:7474"
     depends_on:
@@ -51,7 +51,7 @@ services:
       NEO4G_DATA_DIR: /data/node3
       NEO4G_REPL_POLL_INTERVAL: 500ms
     volumes:
-      - node3-data:/data/node3
+      - ./data/node3:/data/node3
     ports:
       - "7476:7474"
     depends_on:
@@ -81,8 +81,3 @@ services:
         condition: service_healthy
       node3:
         condition: service_healthy
-
-volumes:
-  node1-data:
-  node2-data:
-  node3-data:

@@ -109,6 +109,9 @@ func (e *Engine) WAL() *wal.WAL { return e.w }
 // DiskManager returns the underlying disk manager.
 func (e *Engine) DiskManager() *disk.Manager { return e.dm }
 
+// IndexManager returns the underlying index manager.
+func (e *Engine) IndexManager() *index.Manager { return e.idx }
+
 // Checkpoint forces a WAL checkpoint (flush + truncate). No-op if WAL is disabled.
 func (e *Engine) Checkpoint() error {
 	if e.txm == nil {

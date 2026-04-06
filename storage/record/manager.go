@@ -127,6 +127,19 @@ func (rm *Manager) logPageWrite(txID storage.TxID, pageID storage.PageID, before
 	return rm.txm.WritePage(txID, pageID, before, after)
 }
 
+func (rm *Manager) enableIndexLogging(txID storage.TxID) {
+	if rm.txm == nil {
+		return
+	}
+	rm.idx.SetPageLogger(func(pageID storage.PageID, before, after *storage.Page) error {
+		return rm.txm.WritePage(txID, pageID, before, after)
+	})
+}
+
+func (rm *Manager) disableIndexLogging() {
+	rm.idx.SetPageLogger(nil)
+}
+
 // --- Node operations ---
 
 // CreateNode creates a new node with the given labels and properties.
@@ -154,6 +167,8 @@ func (rm *Manager) CreateNode(labels []string, props map[string]graph.Value) (ni
 		return 0, fmt.Errorf("insert node record: %w", err)
 	}
 
+	rm.enableIndexLogging(txID)
+	defer rm.disableIndexLogging()
 	if err := rm.idx.NodeIndex.Insert(uint64(node.ID), rid); err != nil {
 		return 0, fmt.Errorf("index node %d: %w", node.ID, err)
 	}
@@ -236,6 +251,8 @@ func (rm *Manager) UpdateNode(id graph.NodeID, props map[string]graph.Value) (er
 	if err != nil {
 		return fmt.Errorf("reinsert node %d: %w", id, err)
 	}
+	rm.enableIndexLogging(txID)
+	defer rm.disableIndexLogging()
 	rm.idx.NodeIndex.Delete(uint64(id))
 	if err := rm.idx.NodeIndex.Insert(uint64(id), newRID); err != nil {
 		return fmt.Errorf("re-index node %d: %w", id, err)
@@ -266,6 +283,8 @@ func (rm *Manager) DeleteNode(id graph.NodeID) (err error) {
 		return fmt.Errorf("delete node %d: %w", id, err)
 	}
 
+	rm.enableIndexLogging(txID)
+	defer rm.disableIndexLogging()
 	rm.idx.NodeIndex.Delete(uint64(id))
 	return nil
 }
@@ -306,6 +325,8 @@ func (rm *Manager) CreateEdge(edgeType string, src, dst graph.NodeID, props map[
 		return 0, fmt.Errorf("insert edge record: %w", err)
 	}
 
+	rm.enableIndexLogging(txID)
+	defer rm.disableIndexLogging()
 	if err := rm.idx.EdgeIndex.Insert(uint64(edge.ID), rid); err != nil {
 		return 0, fmt.Errorf("index edge %d: %w", edge.ID, err)
 	}
@@ -396,6 +417,8 @@ func (rm *Manager) DeleteEdge(id graph.EdgeID) (err error) {
 		return fmt.Errorf("delete edge %d: %w", id, err)
 	}
 
+	rm.enableIndexLogging(txID)
+	defer rm.disableIndexLogging()
 	rm.idx.EdgeIndex.Delete(uint64(id))
 	rm.idx.OutIndex.Delete(index.AdjacencyKey(edge.SourceID, id))
 	rm.idx.InIndex.Delete(index.AdjacencyKey(edge.TargetID, id))

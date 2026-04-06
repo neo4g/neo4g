@@ -1,12 +1,15 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/seankohjs/neo4g/parser"
+	"github.com/seankohjs/neo4g/storage"
 	"github.com/seankohjs/neo4g/storage/wal"
 )
 
@@ -53,6 +56,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/wal/pull", s.handleWALPull)
 	mux.HandleFunc("POST /api/role", s.handleRole)
+	mux.HandleFunc("GET /api/checksum", s.handleChecksum)
 	return mux
 }
 
@@ -97,10 +101,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
-		"node_id": s.cfg.NodeID,
-		"role":    s.Role(),
-		"lsn":     lsn,
+		"status":       "ok",
+		"node_id":      s.cfg.NodeID,
+		"role":         s.Role(),
+		"lsn":          lsn,
+		"primary_addr": s.getPrimaryAddr(),
 	})
 }
 
@@ -171,11 +176,13 @@ func (s *Server) handleRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	oldRole := s.Role()
+	oldPrimary := s.getPrimaryAddr()
 	s.SetRole(req.Role)
 
 	if req.Role == "replica" && req.PrimaryAddr != "" {
 		s.SetPrimaryAddr(req.PrimaryAddr)
-		if oldRole == "primary" || !s.replicatorRunning() {
+		addrChanged := req.PrimaryAddr != oldPrimary
+		if oldRole == "primary" || addrChanged || !s.replicatorRunning() {
 			s.startReplicator()
 		}
 	}
@@ -189,5 +196,34 @@ func (s *Server) handleRole(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"node_id": s.cfg.NodeID,
 		"role":    req.Role,
+	})
+}
+
+// handleChecksum returns a SHA-256 over the header page + page count.
+// Replicas compare this against their own to detect drift.
+func (s *Server) handleChecksum(w http.ResponseWriter, _ *http.Request) {
+	pool := s.engine.Pool()
+	dm := s.engine.DiskManager()
+	pageCount := dm.PageCount()
+
+	h := sha256.New()
+	page, err := pool.FetchPage(storage.HeaderPageID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fetch header: "+err.Error())
+		return
+	}
+	h.Write(page[:])
+	pool.UnpinPage(storage.HeaderPageID, false)
+
+	var lsn uint64
+	if wl := s.engine.WAL(); wl != nil {
+		lsn = uint64(wl.NextLSN()) - 1
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"checksum":   hex.EncodeToString(h.Sum(nil)),
+		"page_count": pageCount,
+		"lsn":        lsn,
 	})
 }

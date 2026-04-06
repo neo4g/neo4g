@@ -70,6 +70,24 @@ func LoadManager(p *pool.Pool, dm *disk.Manager) (*Manager, error) {
 	}, nil
 }
 
+// SetPageLogger installs (or clears) a callback on all four B+Trees so every
+// page mutation is captured for WAL logging.
+func (m *Manager) SetPageLogger(l PageLogger) {
+	m.NodeIndex.SetPageLogger(l)
+	m.EdgeIndex.SetPageLogger(l)
+	m.OutIndex.SetPageLogger(l)
+	m.InIndex.SetPageLogger(l)
+}
+
+// RefreshRoots reloads B+Tree root page IDs from the disk manager header.
+// Called by the replicator after applying WAL deltas that update the header.
+func (m *Manager) RefreshRoots(dm *disk.Manager) {
+	m.NodeIndex.SetRootPageID(dm.NodeIndexRoot())
+	m.EdgeIndex.SetRootPageID(dm.EdgeIndexRoot())
+	m.OutIndex.SetRootPageID(dm.OutIndexRoot())
+	m.InIndex.SetRootPageID(dm.InIndexRoot())
+}
+
 func (m *Manager) persistRoots(dm *disk.Manager) error {
 	if err := dm.SetNodeIndexRoot(m.NodeIndex.RootPageID()); err != nil {
 		return err

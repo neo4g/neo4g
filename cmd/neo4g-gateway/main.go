@@ -25,6 +25,12 @@ func main() {
 		log.Println("neo4g-gateway: primary is dead, triggering election")
 		go election.Run()
 	})
+	hb.OnStalePrimary(func(staleNodeID string) {
+		go election.Demote(staleNodeID)
+	})
+	hb.OnWrongPrimary(func(replicaNodeID, shouldFollow string) {
+		go election.Redirect(replicaNodeID, shouldFollow)
+	})
 	hb.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

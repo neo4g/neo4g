@@ -71,6 +71,42 @@ func (e *Election) Run() {
 	}
 }
 
+// Demote tells a specific node to become a replica of the current primary.
+// Used when a stale primary rejoins the cluster.
+func (e *Election) Demote(nodeID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	node := e.cluster.NodeByID(nodeID)
+	primary := e.cluster.Primary()
+	if node == nil || primary == nil || node.ID == primary.ID {
+		return
+	}
+
+	log.Printf("gateway: demoting stale node %s to replica of %s", nodeID, primary.ID)
+	if err := e.setRole(node.Addr, "replica", primary.Addr); err != nil {
+		log.Printf("gateway: failed to demote %s: %v", nodeID, err)
+		return
+	}
+	e.cluster.UpdateHealth(nodeID, true, "replica", node.LSN)
+}
+
+// Redirect tells a replica to follow a different primary.
+func (e *Election) Redirect(replicaNodeID, primaryAddr string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	node := e.cluster.NodeByID(replicaNodeID)
+	if node == nil {
+		return
+	}
+
+	log.Printf("gateway: redirecting replica %s to follow %s", replicaNodeID, primaryAddr)
+	if err := e.setRole(node.Addr, "replica", primaryAddr); err != nil {
+		log.Printf("gateway: failed to redirect %s: %v", replicaNodeID, err)
+	}
+}
+
 func (e *Election) promote(addr string) error {
 	return e.setRole(addr, "primary", "")
 }

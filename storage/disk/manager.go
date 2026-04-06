@@ -257,6 +257,25 @@ func (dm *Manager) PageCount() uint32 {
 	return dm.pageCount
 }
 
+// RefreshHeaderFromPage updates in-memory header fields from a raw page.
+// Used by the replicator after applying WAL deltas to the header page.
+func (dm *Manager) RefreshHeaderFromPage(p *storage.Page) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.pageCount = binary.LittleEndian.Uint32(p[headerPageCountOffset:])
+	dm.freeHead = storage.PageID(binary.LittleEndian.Uint32(p[headerFreeHeadOffset:]))
+	dm.nextNodeID = binary.LittleEndian.Uint64(p[headerNextNodeIDOffset:])
+	dm.nextEdgeID = binary.LittleEndian.Uint64(p[headerNextEdgeIDOffset:])
+	dm.nodeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerNodeIndexRoot:]))
+	dm.edgeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgeIndexRoot:]))
+	dm.outIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerOutIndexRoot:]))
+	dm.inIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerInIndexRoot:]))
+	dm.nodePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageHead:]))
+	dm.nodePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageTail:]))
+	dm.edgePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageHead:]))
+	dm.edgePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageTail:]))
+}
+
 // --- Index root persistence ---
 
 func (dm *Manager) NodeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodeIndexRoot }

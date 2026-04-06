@@ -1,7 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,6 +15,8 @@ import (
 	"github.com/seankohjs/neo4g/storage/wal"
 )
 
+const driftCheckInterval = 10 // check drift every N pull cycles
+
 // Replicator pulls WAL records from the primary and applies them locally.
 type Replicator struct {
 	engine       *Engine
@@ -20,6 +24,7 @@ type Replicator struct {
 	pollInterval time.Duration
 	appliedLSN   wal.LSN
 	client       *http.Client
+	pullCount    int // counts pull cycles for periodic drift check
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -65,6 +70,20 @@ func (r *Replicator) loop() {
 		case <-ticker.C:
 			if err := r.pull(); err != nil {
 				log.Printf("neo4g: replication pull error: %v", err)
+			}
+			r.pullCount++
+			if r.pullCount%driftCheckInterval == 0 {
+				if drifted, err := r.checkDrift(); err != nil {
+					log.Printf("neo4g: drift check error: %v", err)
+				} else if drifted {
+					log.Println("neo4g: drift detected — starting full re-sync from LSN 1")
+					r.appliedLSN = 0
+					if err := r.pull(); err != nil {
+						log.Printf("neo4g: re-sync pull error: %v", err)
+					} else {
+						log.Printf("neo4g: re-sync complete, applied up to LSN %d", r.appliedLSN)
+					}
+				}
 			}
 		}
 	}
@@ -129,6 +148,13 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 		applied := wal.ApplyDelta(page, delta)
 		copy(page[:], applied[:])
 
+		if pageID == storage.HeaderPageID {
+			r.engine.DiskManager().RefreshHeaderFromPage(&applied)
+			if idx := r.engine.IndexManager(); idx != nil {
+				idx.RefreshRoots(r.engine.DiskManager())
+			}
+		}
+
 		if err := pool.UnpinPage(pageID, true); err != nil {
 			return fmt.Errorf("unpin page %d: %w", pageID, err)
 		}
@@ -171,6 +197,9 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 				return fmt.Errorf("fetch page %d: %w", pageID, err)
 			}
 			copy(page[:], data[storage.PageSize:2*storage.PageSize])
+			if pageID == storage.HeaderPageID {
+				r.engine.DiskManager().RefreshHeaderFromPage(page)
+			}
 			if err := pool.UnpinPage(pageID, true); err != nil {
 				return fmt.Errorf("unpin page %d: %w", pageID, err)
 			}
@@ -178,6 +207,62 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 	}
 
 	return nil
+}
+
+type checksumResponse struct {
+	Checksum  string `json:"checksum"`
+	PageCount uint32 `json:"page_count"`
+	LSN       uint64 `json:"lsn"`
+}
+
+// checkDrift compares the local header checksum against the primary's.
+// Returns true if the replica has diverged and needs a full re-sync.
+func (r *Replicator) checkDrift() (bool, error) {
+	url := fmt.Sprintf("%s/api/checksum", r.primaryAddr)
+	resp, err := r.client.Get(url)
+	if err != nil {
+		return false, fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+	}
+
+	var primary checksumResponse
+	if err := json.NewDecoder(resp.Body).Decode(&primary); err != nil {
+		return false, fmt.Errorf("decode checksum: %w", err)
+	}
+
+	// If primary is ahead, that's not drift — we just haven't caught up yet.
+	if primary.LSN > uint64(r.appliedLSN) {
+		return false, nil
+	}
+
+	// Compare header page checksums at the same LSN.
+	localChecksum, err := r.localHeaderChecksum()
+	if err != nil {
+		return false, fmt.Errorf("local checksum: %w", err)
+	}
+
+	if localChecksum != primary.Checksum {
+		log.Printf("neo4g: drift detected — local checksum %s != primary %s (lsn local=%d primary=%d)",
+			localChecksum, primary.Checksum, r.appliedLSN, primary.LSN)
+		return true, nil
+	}
+	return false, nil
+}
+
+func (r *Replicator) localHeaderChecksum() (string, error) {
+	pool := r.engine.Pool()
+	page, err := pool.FetchPage(storage.HeaderPageID)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	h.Write(page[:])
+	pool.UnpinPage(storage.HeaderPageID, false)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func walTypeName(t byte) string {

@@ -8,25 +8,31 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/seankohjs/neo4g/parser"
 )
 
+const readAfterWriteWindow = 2 * time.Second
+
 // Gateway is the reverse-proxy that routes queries to Neo4g nodes.
 type Gateway struct {
-	cluster *Cluster
-	cfg     Config
-	client  *http.Client
-	http    *http.Server
+	cluster    *Cluster
+	cfg        Config
+	client     *http.Client
+	http       *http.Server
+	mu         sync.Mutex
+	lastWrites map[string]time.Time // per-client last write time, keyed by IP
 }
 
 // New creates a Gateway wired to the given cluster and config.
 func New(cfg Config, cluster *Cluster) *Gateway {
 	g := &Gateway{
-		cluster: cluster,
-		cfg:     cfg,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		cluster:    cluster,
+		cfg:        cfg,
+		client:     &http.Client{Timeout: 30 * time.Second},
+		lastWrites: make(map[string]time.Time),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/query", g.handleQuery)
@@ -92,9 +98,20 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := clientAddr(r)
+
 	var target *NodeState
 	if stmt.IsReadOnly() {
-		target = g.cluster.NextReadNode()
+		g.mu.Lock()
+		lw, ok := g.lastWrites[clientIP]
+		recentWrite := ok && time.Since(lw) < readAfterWriteWindow
+		g.mu.Unlock()
+
+		if recentWrite {
+			target = g.cluster.Primary()
+		} else {
+			target = g.cluster.NextReadNode()
+		}
 		if target == nil {
 			writeError(w, http.StatusServiceUnavailable, "no healthy nodes available")
 			return
@@ -105,6 +122,9 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "no primary available")
 			return
 		}
+		g.mu.Lock()
+		g.lastWrites[clientIP] = time.Now()
+		g.mu.Unlock()
 	}
 
 	g.forward(w, target.Addr, body)
@@ -123,6 +143,26 @@ func (g *Gateway) forward(w http.ResponseWriter, addr string, body []byte) {
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+func clientAddr(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
+}
+
+// CleanupStaleClients removes expired entries from the per-client write tracker.
+// Call periodically (e.g. from heartbeat goroutine).
+func (g *Gateway) CleanupStaleClients() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for ip, t := range g.lastWrites {
+		if time.Since(t) > readAfterWriteWindow {
+			delete(g.lastWrites, ip)
+		}
+	}
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
