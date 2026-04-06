@@ -1,5 +1,8 @@
 # Neo4g
 
+> [!WARNING]
+> This is a hobby/learning project and is **not ready for production use**. Expect breaking changes, missing features, and no stability guarantees.
+
 A minimal Neo4j-equivalent graph database written from scratch in Go. Property graph model — nodes with labels and properties, directed edges with types and properties — backed by a custom storage engine with ACID transactions.
 
 Built for CS464. Not a production database — no clustering, no query optimizer, intentionally minimal.
