@@ -1,7 +1,9 @@
 services:
   node1:
-    build: .
-    entrypoint: ["neo4g"]
+    build:
+      context: .
+      target: neo4g
+    image: ghcr.io/neo4g/neo4g:latest
     environment:
       NEO4G_NODE_ID: node1
       NEO4G_ROLE: primary
@@ -18,8 +20,10 @@ services:
       retries: 3
 
   node2:
-    build: .
-    entrypoint: ["neo4g"]
+    build:
+      context: .
+      target: neo4g
+    image: ghcr.io/neo4g/neo4g:latest
     environment:
       NEO4G_NODE_ID: node2
       NEO4G_ROLE: replica
@@ -41,8 +45,10 @@ services:
       retries: 3
 
   node3:
-    build: .
-    entrypoint: ["neo4g"]
+    build:
+      context: .
+      target: neo4g
+    image: ghcr.io/neo4g/neo4g:latest
     environment:
       NEO4G_NODE_ID: node3
       NEO4G_ROLE: replica
@@ -64,8 +70,10 @@ services:
       retries: 3
 
   gateway:
-    build: .
-    entrypoint: ["neo4g-gateway"]
+    build:
+      context: .
+      target: gateway
+    image: ghcr.io/neo4g/gateway:latest
     environment:
       NEO4G_GW_LISTEN_ADDR: ":7480"
       NEO4G_GW_NODES: "node1=http://node1:7474,node2=http://node2:7474,node3=http://node3:7474"
