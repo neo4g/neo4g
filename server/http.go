@@ -42,7 +42,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 	s.http = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      s.routes(),
+		Handler:      corsMiddleware(s.routes()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	}
