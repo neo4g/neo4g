@@ -69,7 +69,11 @@ type propFilter struct {
 // equality filters that can be pushed down into ScanNodes, lone id(var) = const
 // lookups for anchor variables, and a residual expression evaluated after the join.
 // badIDs contains anchors constrained to two different ids; those matches are empty.
-func extractPredicates(where parser.Expr, params map[string]interface{}, patternVars map[string]bool) (map[string][]propFilter, map[string]graph.NodeID, map[string]bool, parser.Expr) {
+func extractPredicates(
+	where parser.Expr,
+	params map[string]interface{},
+	patternVars map[string]bool,
+) (map[string][]propFilter, map[string]graph.NodeID, map[string]bool, parser.Expr) {
 	if where == nil {
 		return nil, nil, nil, nil
 	}
@@ -89,7 +93,14 @@ func extractPredicates(where parser.Expr, params map[string]interface{}, pattern
 	return filters, ids, badIDs, residual
 }
 
-func extractRec(e parser.Expr, params map[string]interface{}, out map[string][]propFilter, ids map[string]graph.NodeID, badIDs map[string]bool, vars map[string]bool) parser.Expr {
+func extractRec(
+	e parser.Expr,
+	params map[string]interface{},
+	out map[string][]propFilter,
+	ids map[string]graph.NodeID,
+	badIDs map[string]bool,
+	vars map[string]bool,
+) parser.Expr {
 	bin, ok := e.(*parser.BinaryExpr)
 	if !ok {
 		return e
@@ -354,7 +365,13 @@ func sameEntity(a, b interface{}) bool {
 
 // resolvePatternWithFilters resolves a single pattern to rows, applying any
 // pushed-down property filters to the first node pattern.
-func (ex *Executor) resolvePatternWithFilters(pat *parser.Pattern, pushdown map[string][]propFilter, idLookup map[string]graph.NodeID, badIDs map[string]bool, params map[string]interface{}) ([]Row, error) {
+func (ex *Executor) resolvePatternWithFilters(
+	pat *parser.Pattern,
+	pushdown map[string][]propFilter,
+	idLookup map[string]graph.NodeID,
+	badIDs map[string]bool,
+	params map[string]interface{},
+) ([]Row, error) {
 	elems := pat.Elements
 	if len(elems) == 0 {
 		return nil, fmt.Errorf("empty pattern")
@@ -478,7 +495,13 @@ func isNotFound(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
-func (ex *Executor) expandEdge(rows []Row, srcNP *parser.NodePattern, ep *parser.EdgePattern, dstNP *parser.NodePattern, params map[string]interface{}) ([]Row, error) {
+func (ex *Executor) expandEdge(
+	rows []Row,
+	srcNP *parser.NodePattern,
+	ep *parser.EdgePattern,
+	dstNP *parser.NodePattern,
+	params map[string]interface{},
+) ([]Row, error) {
 	dir := astDirToGraph(ep.Dir)
 	edgeType := ""
 	if len(ep.Types) > 0 {
@@ -498,85 +521,115 @@ func (ex *Executor) expandEdge(rows []Row, srcNP *parser.NodePattern, ep *parser
 		}
 
 		for _, edge := range edges {
-			if ep.Variable != "" {
-				if existing, ok := row[ep.Variable]; ok && !sameEntity(existing, edge) {
-					continue
-				}
+			newRow, ok, err := ex.expandOne(row, srcNode.ID, edge, ep, dstNP, params)
+			if err != nil {
+				return nil, err
 			}
-			if len(ep.Properties) > 0 {
-				ok, err := propsMatch(edge.Properties, ep.Properties, row, params)
-				if err != nil {
-					return nil, err
-				}
-				if !ok {
-					continue
-				}
+			if ok {
+				out = append(out, newRow)
 			}
-
-			// The neighbor is the endpoint that is not the node being expanded.
-			// Incoming edges from Expand(..., Both) have TargetID == src.
-			otherID := otherEndpoint(edge, srcNode.ID)
-
-			var dstNode *graph.Node
-			if dstNP.Variable != "" {
-				if existing, ok := row[dstNP.Variable]; ok {
-					n, isNode := existing.(*graph.Node)
-					if !isNode || n.ID != otherID {
-						continue
-					}
-					dstNode = n
-				}
-			}
-
-			needNode := dstNode == nil && (dstNP.Variable != "" || len(dstNP.Labels) > 0 || len(dstNP.Properties) > 0)
-			if needNode {
-				fetched, err := ex.store.GetNode(otherID)
-				if err != nil {
-					return nil, fmt.Errorf("get node %d: %w", otherID, err)
-				}
-				if fetched == nil {
-					return nil, fmt.Errorf("get node %d: empty result", otherID)
-				}
-				dstNode = fetched
-			}
-
-			if len(dstNP.Labels) > 0 && (dstNode == nil || !hasLabels(dstNode, dstNP.Labels)) {
-				continue
-			}
-			if len(dstNP.Properties) > 0 {
-				var props map[string]graph.Value
-				if dstNode != nil {
-					props = dstNode.Properties
-				}
-				ok, err := propsMatch(props, dstNP.Properties, row, params)
-				if err != nil {
-					return nil, err
-				}
-				if !ok {
-					continue
-				}
-			}
-
-			newRow := cloneRow(row)
-			if ep.Variable != "" {
-				if _, bound := row[ep.Variable]; !bound {
-					newRow[ep.Variable] = edge
-				}
-			}
-			if dstNode == nil {
-				dstNode = &graph.Node{ID: otherID}
-			}
-			if dstNP.Variable != "" {
-				if _, bound := row[dstNP.Variable]; !bound {
-					newRow[dstNP.Variable] = dstNode
-				}
-			}
-			newRow[currentNodeKey] = dstNode
-			out = append(out, newRow)
 		}
 	}
 
 	return out, nil
+}
+
+// expandOne reports whether edge satisfies the pattern from this row and, when
+// it does, the row extended with that edge and its other endpoint.
+func (ex *Executor) expandOne(
+	row Row,
+	srcID graph.NodeID,
+	edge *graph.Edge,
+	ep *parser.EdgePattern,
+	dstNP *parser.NodePattern,
+	params map[string]interface{},
+) (Row, bool, error) {
+	if ep.Variable != "" {
+		if existing, ok := row[ep.Variable]; ok && !sameEntity(existing, edge) {
+			return nil, false, nil
+		}
+	}
+	if len(ep.Properties) > 0 {
+		ok, err := propsMatch(edge.Properties, ep.Properties, row, params)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+	}
+
+	// The neighbor is the endpoint that is not the node being expanded.
+	// Incoming edges from Expand(..., Both) have TargetID == src.
+	otherID := otherEndpoint(edge, srcID)
+
+	var dstNode *graph.Node
+	if dstNP.Variable != "" {
+		if existing, ok := row[dstNP.Variable]; ok {
+			n, isNode := existing.(*graph.Node)
+			if !isNode || n.ID != otherID {
+				return nil, false, nil
+			}
+			dstNode = n
+		}
+	}
+
+	needNode := dstNode == nil && (dstNP.Variable != "" || len(dstNP.Labels) > 0 || len(dstNP.Properties) > 0)
+	if needNode {
+		fetched, err := ex.store.GetNode(otherID)
+		if err != nil {
+			return nil, false, fmt.Errorf("get node %d: %w", otherID, err)
+		}
+		if fetched == nil {
+			return nil, false, fmt.Errorf("get node %d: empty result", otherID)
+		}
+		dstNode = fetched
+	}
+
+	if len(dstNP.Labels) > 0 && (dstNode == nil || !hasLabels(dstNode, dstNP.Labels)) {
+		return nil, false, nil
+	}
+	if len(dstNP.Properties) > 0 {
+		var props map[string]graph.Value
+		if dstNode != nil {
+			props = dstNode.Properties
+		}
+		ok, err := propsMatch(props, dstNP.Properties, row, params)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+	}
+
+	return rowWithExpansion(row, edge, ep, dstNP, dstNode, otherID), true, nil
+}
+
+func rowWithExpansion(
+	row Row,
+	edge *graph.Edge,
+	ep *parser.EdgePattern,
+	dstNP *parser.NodePattern,
+	dstNode *graph.Node,
+	otherID graph.NodeID,
+) Row {
+	newRow := cloneRow(row)
+	if ep.Variable != "" {
+		if _, bound := row[ep.Variable]; !bound {
+			newRow[ep.Variable] = edge
+		}
+	}
+	if dstNode == nil {
+		dstNode = &graph.Node{ID: otherID}
+	}
+	if dstNP.Variable != "" {
+		if _, bound := row[dstNP.Variable]; !bound {
+			newRow[dstNP.Variable] = dstNode
+		}
+	}
+	newRow[currentNodeKey] = dstNode
+	return newRow
 }
 
 func otherEndpoint(edge *graph.Edge, src graph.NodeID) graph.NodeID {
