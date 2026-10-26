@@ -13,6 +13,9 @@ func isUpdateRecord(t byte) bool {
 }
 
 func redoPage(dm *disk.Manager, rec wal.Record) error {
+	if err := dm.EnsurePage(rec.PageID); err != nil {
+		return err
+	}
 	switch rec.Type {
 	case wal.RecordUpdate:
 		var afterPage storage.Page
@@ -30,6 +33,11 @@ func redoPage(dm *disk.Manager, rec wal.Record) error {
 }
 
 func undoPage(dm *disk.Manager, rec wal.Record) error {
+	// Pages allocated by an uncommitted transaction sit past the committed
+	// catalog. Leaving them unread is enough; the next allocation overwrites them.
+	if uint32(rec.PageID) >= dm.PageCount() {
+		return nil
+	}
 	switch rec.Type {
 	case wal.RecordUpdate:
 		var beforePage storage.Page
@@ -60,10 +68,27 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 		return 0, 0, nil
 	}
 
+	// Replay only records after the last checkpoint. A checkpoint is taken
+	// with no active transactions and after dirty pages are flushed, so the
+	// log before that marker is history, not work left to redo.
+	cp := -1
+	for i, rec := range records {
+		if rec.Type == wal.RecordCheckpoint {
+			cp = i
+		}
+	}
+	replay := records
+	if cp >= 0 {
+		replay = records[cp+1:]
+	}
+	if len(replay) == 0 {
+		return 0, 0, nil
+	}
+
 	// --- Analysis phase ---
 	committed := make(map[storage.TxID]bool)
 	aborted := make(map[storage.TxID]bool)
-	for _, rec := range records {
+	for _, rec := range replay {
 		switch rec.Type {
 		case wal.RecordCommit:
 			committed[rec.TxID] = true
@@ -74,7 +99,7 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 
 	// --- Redo phase ---
 	redoneSet := make(map[storage.TxID]bool)
-	for _, rec := range records {
+	for _, rec := range replay {
 		if !isUpdateRecord(rec.Type) {
 			continue
 		}
@@ -90,8 +115,8 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 
 	// --- Undo phase ---
 	undoneSet := make(map[storage.TxID]bool)
-	for i := len(records) - 1; i >= 0; i-- {
-		rec := records[i]
+	for i := len(replay) - 1; i >= 0; i-- {
+		rec := replay[i]
 		if !isUpdateRecord(rec.Type) {
 			continue
 		}
@@ -109,8 +134,13 @@ func Recover(w *wal.WAL, dm *disk.Manager) (redone, undone int, err error) {
 		return redone, undone, fmt.Errorf("sync after recovery: %w", err)
 	}
 
-	if err := w.Truncate(); err != nil {
-		return redone, undone, fmt.Errorf("truncate WAL: %w", err)
+	// Append a checkpoint so the next open does not replay these records,
+	// without discarding the log or rewinding LSNs.
+	if _, err := w.LogCheckpoint(); err != nil {
+		return redone, undone, fmt.Errorf("checkpoint after recovery: %w", err)
+	}
+	if err := w.Sync(); err != nil {
+		return redone, undone, fmt.Errorf("sync checkpoint after recovery: %w", err)
 	}
 
 	return redone, undone, nil

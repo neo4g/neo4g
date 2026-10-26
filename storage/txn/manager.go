@@ -22,9 +22,10 @@ const (
 )
 
 type txEntry struct {
-	id          storage.TxID
-	state       TxState
-	lockedPages map[storage.PageID]bool
+	id           storage.TxID
+	state        TxState
+	lockedPages  map[storage.PageID]bool
+	headerBefore storage.Page
 }
 
 // Manager manages active transactions, coordinating with the WAL and
@@ -49,8 +50,9 @@ type Manager struct {
 }
 
 // NewManager creates a transaction manager.
+// Data-page writes force the WAL first unless NoSync is set.
 func NewManager(w *wal.WAL, p *pool.Pool, dm *disk.Manager) *Manager {
-	return &Manager{
+	tm := &Manager{
 		wal:       w,
 		pool:      p,
 		disk:      dm,
@@ -58,6 +60,13 @@ func NewManager(w *wal.WAL, p *pool.Pool, dm *disk.Manager) *Manager {
 		active:    make(map[storage.TxID]*txEntry),
 		pageLocks: make(map[storage.PageID]storage.TxID),
 	}
+	dm.SetBeforeDataWrite(func() error {
+		if tm.NoSync {
+			return nil
+		}
+		return w.Force()
+	})
+	return tm
 }
 
 // Begin starts a new transaction and returns its ID.
@@ -69,11 +78,19 @@ func (tm *Manager) Begin() storage.TxID {
 	tm.nextTxID++
 
 	tm.active[id] = &txEntry{
-		id:          id,
-		state:       TxStateActive,
-		lockedPages: make(map[storage.PageID]bool),
+		id:           id,
+		state:        TxStateActive,
+		lockedPages:  make(map[storage.PageID]bool),
+		headerBefore: dmHeader(tm.disk),
 	}
 	return id
+}
+
+func dmHeader(dm *disk.Manager) storage.Page {
+	if dm == nil {
+		return storage.Page{}
+	}
+	return dm.HeaderImage()
 }
 
 // WritePage records a page modification within a transaction.
@@ -117,8 +134,19 @@ func (tm *Manager) Commit(txID storage.TxID) error {
 		return fmt.Errorf("transaction %d is not active", txID)
 	}
 
-	if err := tm.disk.FlushHeader(); err != nil {
-		return fmt.Errorf("flush header: %w", err)
+	// Log the catalog (page 0) before the commit record, then sync both
+	// before the header image is allowed to reach the data file.
+	if tm.disk != nil {
+		diskHeader, err := tm.disk.ReadPage(storage.HeaderPageID)
+		if err != nil {
+			return fmt.Errorf("read header: %w", err)
+		}
+		mem := tm.disk.HeaderImage()
+		if *diskHeader != mem {
+			if _, err := tm.wal.LogUpdate(txID, storage.HeaderPageID, diskHeader, &mem); err != nil {
+				return fmt.Errorf("WAL log header: %w", err)
+			}
+		}
 	}
 
 	if _, err := tm.wal.LogCommit(txID); err != nil {
@@ -128,6 +156,10 @@ func (tm *Manager) Commit(txID storage.TxID) error {
 		if err := tm.wal.Sync(); err != nil {
 			return fmt.Errorf("WAL sync: %w", err)
 		}
+	}
+
+	if err := tm.disk.FlushHeader(); err != nil {
+		return fmt.Errorf("flush header: %w", err)
 	}
 
 	tx.state = TxStateCommitted
@@ -159,9 +191,19 @@ func (tm *Manager) Abort(txID storage.TxID) error {
 		if rec.TxID != txID || !isUpdateRecord(rec.Type) {
 			continue
 		}
-		if err := undoPage(tm.disk, rec); err != nil {
+		if rec.PageID == storage.HeaderPageID {
+			continue
+		}
+		if err := tm.undoRecord(rec); err != nil {
 			return fmt.Errorf("undo page %d: %w", rec.PageID, err)
 		}
+	}
+
+	// Catalog edits from this transaction never reached disk (they are logged
+	// only at commit). Put the in-memory header back to the begin snapshot
+	// so index roots, page chains, and ID counters roll back with the pages.
+	if tm.disk != nil {
+		tm.disk.RestoreHeader(&tx.headerBefore)
 	}
 
 	if _, err := tm.wal.LogAbort(txID); err != nil {
@@ -174,10 +216,16 @@ func (tm *Manager) Abort(txID storage.TxID) error {
 	return nil
 }
 
-// Checkpoint flushes all dirty pages to disk and writes a checkpoint record.
+// Checkpoint flushes all dirty pages and appends a checkpoint marker.
+// It refuses to run while a transaction is active, and it does not truncate
+// the log or reuse LSNs. Callers that need the log forced still Sync it.
 func (tm *Manager) Checkpoint() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+
+	if len(tm.active) > 0 {
+		return fmt.Errorf("checkpoint refused: %d active transaction(s)", len(tm.active))
+	}
 
 	if err := tm.pool.FlushAll(); err != nil {
 		return fmt.Errorf("flush all pages: %w", err)
@@ -193,8 +241,53 @@ func (tm *Manager) Checkpoint() error {
 	if err := tm.wal.Sync(); err != nil {
 		return fmt.Errorf("WAL sync checkpoint: %w", err)
 	}
+	return nil
+}
 
-	return tm.wal.Truncate()
+// undoRecord installs the before-image into the buffer pool and onto disk
+// so a later flush cannot write the after-image back.
+func (tm *Manager) undoRecord(rec wal.Record) error {
+	before, err := tm.beforeImage(rec)
+	if err != nil {
+		return err
+	}
+	if tm.pool != nil {
+		tm.pool.Install(rec.PageID, &before)
+	}
+	return tm.disk.WritePage(rec.PageID, &before)
+}
+
+func (tm *Manager) beforeImage(rec wal.Record) (storage.Page, error) {
+	switch rec.Type {
+	case wal.RecordUpdate:
+		var before storage.Page
+		if len(rec.BeforeData) < storage.PageSize {
+			return storage.Page{}, fmt.Errorf("short before-image")
+		}
+		copy(before[:], rec.BeforeData)
+		return before, nil
+	case wal.RecordUpdateDelta:
+		current, err := tm.currentPage(rec.PageID)
+		if err != nil {
+			return storage.Page{}, err
+		}
+		return wal.ApplyDeltaUndo(&current, rec.DeltaData), nil
+	default:
+		return storage.Page{}, fmt.Errorf("record type %d is not an update", rec.Type)
+	}
+}
+
+func (tm *Manager) currentPage(id storage.PageID) (storage.Page, error) {
+	if tm.pool != nil {
+		if pg, ok := tm.pool.Cached(id); ok {
+			return pg, nil
+		}
+	}
+	p, err := tm.disk.ReadPage(id)
+	if err != nil {
+		return storage.Page{}, err
+	}
+	return *p, nil
 }
 
 func (tm *Manager) releaseLocks(tx *txEntry) {

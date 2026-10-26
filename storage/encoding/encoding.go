@@ -4,6 +4,7 @@ package encoding
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"github.com/neo4g/neo4g/graph"
 )
@@ -145,7 +146,14 @@ func encodeProperties(buf []byte, off int, props map[string]graph.Value) int {
 	binary.LittleEndian.PutUint16(buf[off:], uint16(len(props)))
 	off += 2
 
-	for k, v := range props {
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := props[k]
 		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
 		off += 2
 		copy(buf[off:], k)

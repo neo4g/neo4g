@@ -1,6 +1,7 @@
 package index
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -8,6 +9,8 @@ import (
 	"github.com/neo4g/neo4g/storage"
 	"github.com/neo4g/neo4g/storage/disk"
 	"github.com/neo4g/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/storage/txn"
+	"github.com/neo4g/neo4g/storage/wal"
 )
 
 func newTestBTree(t *testing.T) *BTree {
@@ -205,5 +208,125 @@ func TestAdjacencyKeyEncoding(t *testing.T) {
 	otherKey := AdjacencyKey(graph.NodeID(6), graph.EdgeID(1))
 	if otherKey >= start && otherKey <= end {
 		t.Error("key from different node should be outside range")
+	}
+}
+
+func TestBTreeRootSplitPersisted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	dm, err := disk.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bp := pool.New(dm, 16)
+	bt, err := NewBTree(bp, dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dm.SetNodeIndexRoot(bt.RootPageID()); err != nil {
+		t.Fatal(err)
+	}
+	bt.SetRootUpdater(dm.SetNodeIndexRoot)
+
+	n := btreeMaxLeafKeys + 1
+	for i := range n {
+		rid := storage.RID{PageID: storage.PageID(i + 1), Slot: uint16(i)}
+		if err := bt.Insert(uint64(i), rid); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	rightKey := uint64(n - 1)
+	if _, ok := bt.Search(rightKey); !ok {
+		t.Fatal("right-sibling key missing before close")
+	}
+	if err := bp.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dm.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dm2, err := disk.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm2.Close()
+	bp2 := pool.New(dm2, 16)
+	loaded := LoadBTree(bp2, dm2, dm2.NodeIndexRoot())
+	rid, ok := loaded.Search(rightKey)
+	if !ok {
+		t.Fatalf("key %d missing after reload from header root %d", rightKey, dm2.NodeIndexRoot())
+	}
+	if rid.PageID != storage.PageID(n) {
+		t.Fatalf("key %d page = %d, want %d", rightKey, rid.PageID, n)
+	}
+	if _, ok := loaded.Search(0); !ok {
+		t.Fatal("left-sibling key missing after reload")
+	}
+}
+
+func TestBTreeRootRestoredOnAbort(t *testing.T) {
+	dir := t.TempDir()
+	dm, err := disk.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm.Close()
+	w, err := wal.Open(filepath.Join(dir, "test.wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	bp := pool.New(dm, 32)
+	tm := txn.NewManager(w, bp, dm)
+	bt, err := NewBTree(bp, dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := bt.RootPageID()
+	if err := dm.SetNodeIndexRoot(old); err != nil {
+		t.Fatal(err)
+	}
+	bt.SetRootUpdater(dm.SetNodeIndexRoot)
+
+	tx := tm.Begin()
+	bt.SetPageLogger(func(pageID storage.PageID, before, after *storage.Page) error {
+		return tm.WritePage(tx, pageID, before, after)
+	})
+	n := btreeMaxLeafKeys + 1
+	for i := range n {
+		if err := bt.Insert(uint64(i), storage.RID{PageID: 1, Slot: 0}); err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+	}
+	if bt.RootPageID() == old {
+		t.Fatal("expected the root to split")
+	}
+	if err := tm.Abort(tx); err != nil {
+		t.Fatal(err)
+	}
+	bt.RevertRoot()
+	if dm.NodeIndexRoot() != old {
+		t.Fatalf("header root = %d, want %d", dm.NodeIndexRoot(), old)
+	}
+	if bt.RootPageID() != old {
+		t.Fatalf("btree root = %d, want %d", bt.RootPageID(), old)
+	}
+	if _, ok := bt.Search(uint64(n - 1)); ok {
+		t.Fatal("aborted key is still visible")
+	}
+}
+
+func TestBTreeLogFailureRestoresLeaf(t *testing.T) {
+	bt := newTestBTree(t)
+	bt.SetPageLogger(func(storage.PageID, *storage.Page, *storage.Page) error {
+		return errors.New("boom")
+	})
+	err := bt.Insert(1, storage.RID{PageID: 3, Slot: 1})
+	if err == nil {
+		t.Fatal("expected log failure")
+	}
+	if _, ok := bt.Search(1); ok {
+		t.Fatal("key visible after a failed log")
 	}
 }

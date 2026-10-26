@@ -1,6 +1,7 @@
 package encoding
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/neo4g/neo4g/graph"
@@ -152,5 +153,26 @@ func TestValueTypes(t *testing.T) {
 	byv := graph.BytesValue([]byte{0xDE, 0xAD})
 	if len(byv.AsBytes()) != 2 || byv.AsBytes()[0] != 0xDE {
 		t.Errorf("BytesValue: unexpected data")
+	}
+}
+
+func TestEncodePropertiesSorted(t *testing.T) {
+	node := &graph.Node{
+		ID: 1,
+		Properties: map[string]graph.Value{
+			"b": graph.StringValue("2"),
+			"a": graph.StringValue("1"),
+			"c": graph.StringValue("3"),
+		},
+	}
+	data := EncodeNode(node)
+	ia := bytes.Index(data, []byte("a"))
+	ib := bytes.Index(data, []byte("b"))
+	ic := bytes.Index(data, []byte("c"))
+	if ia < 0 || ib < 0 || ic < 0 || ia >= ib || ib >= ic {
+		t.Fatalf("property keys not sorted: a=%d b=%d c=%d", ia, ib, ic)
+	}
+	if !bytes.Equal(data, EncodeNode(node)) {
+		t.Fatal("property encoding is not stable")
 	}
 }
