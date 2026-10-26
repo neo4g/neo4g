@@ -176,12 +176,6 @@ func (s *Server) fenceGeneration() uint64 {
 	return s.fenceGen
 }
 
-func (s *Server) replicatorRunning() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.repl != nil
-}
-
 // ListenAndServe starts the public HTTP server and the internal gRPC server.
 // It blocks until HTTP is shut down or encounters a fatal error.
 func (s *Server) ListenAndServe() error {

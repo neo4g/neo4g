@@ -1,13 +1,17 @@
 // Package wal implements the Write-Ahead Log for crash recovery.
 //
 // The WAL ensures durability and atomicity by logging all page modifications
-// before they are written to the data file.
+// before they are written to the data file. Each record carries a CRC so a
+// torn tail can be discarded on open. Log records stay buffered until Force
+// or Sync; callers must Force before writing a data page (group commit).
 package wal
 
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"sync"
@@ -24,7 +28,13 @@ const (
 	RecordUpdateDelta byte = 5 // delta-compressed page update
 )
 
-const recordHeaderSize = 25 // LSN(8) + TxID(8) + Type(1) + PageID(4) + DataLen(4)
+const (
+	recordHeaderSize = 25 // LSN(8) + TxID(8) + Type(1) + PageID(4) + DataLen(4)
+	checksumSize     = 4
+)
+
+// ErrChecksum is returned when a record's CRC does not match its bytes.
+var ErrChecksum = errors.New("wal checksum mismatch")
 
 // LSN (Log Sequence Number) uniquely identifies a WAL record.
 type LSN uint64
@@ -48,9 +58,11 @@ type WAL struct {
 	file    *os.File
 	buf     *bufio.Writer
 	nextLSN LSN
+	durable bool // buffered records have been flushed and fsynced
 }
 
 // Open opens or creates a WAL file at the given path.
+// A partial record at the tail is truncated back to the last valid CRC.
 func Open(path string) (*WAL, error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
@@ -66,18 +78,20 @@ func Open(path string) (*WAL, error) {
 	w := &WAL{
 		file:    file,
 		nextLSN: 1,
+		durable: true,
 	}
 
 	if info.Size() > 0 {
-		lastLSN, err := w.findLastLSN()
+		lastLSN, err := w.truncateTornTail()
 		if err != nil {
 			file.Close()
 			return nil, fmt.Errorf("scan WAL: %w", err)
 		}
-		w.nextLSN = lastLSN + 1
+		if lastLSN > 0 {
+			w.nextLSN = lastLSN + 1
+		}
 	}
 
-	// Seek to end so buffered writes append correctly
 	if _, err := file.Seek(0, io.SeekEnd); err != nil {
 		file.Close()
 		return nil, err
@@ -87,7 +101,8 @@ func Open(path string) (*WAL, error) {
 	return w, nil
 }
 
-// Close closes the WAL file.
+// Close flushes the WAL buffer and closes the underlying file.
+// Close does not fsync; Sync or Force makes records durable.
 func (w *WAL) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -99,6 +114,7 @@ func (w *WAL) Close() error {
 }
 
 // LogUpdate writes a delta-compressed UPDATE record for a page modification.
+// The record is buffered. It is not stable storage until Force or Sync.
 func (w *WAL) LogUpdate(txID storage.TxID, pageID storage.PageID, before, after *storage.Page) (LSN, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -162,7 +178,7 @@ func (w *WAL) LogAbort(txID storage.TxID) (LSN, error) {
 	return lsn, nil
 }
 
-// LogCheckpoint writes a CHECKPOINT record.
+// LogCheckpoint writes a CHECKPOINT record. It does not truncate the log.
 func (w *WAL) LogCheckpoint() (LSN, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -181,14 +197,26 @@ func (w *WAL) LogCheckpoint() (LSN, error) {
 	return lsn, nil
 }
 
+// Force makes every buffered record durable. A second call is a no-op until
+// another record is appended, so a group of commits can sync once.
+func (w *WAL) Force() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.forceLocked()
+}
+
 // Sync flushes the WAL file to durable storage.
 func (w *WAL) Sync() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.buf.Flush(); err != nil {
-		return err
-	}
-	return w.file.Sync()
+	return w.forceLocked()
+}
+
+// Durable reports whether every appended record has been fsynced.
+func (w *WAL) Durable() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.durable
 }
 
 // ReadAll reads all WAL records from the beginning of the file.
@@ -206,7 +234,7 @@ func (w *WAL) ReadAll() ([]Record, error) {
 	var records []Record
 	for {
 		rec, err := w.readRecord()
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err == io.EOF {
 			break
 		}
 		if err != nil {
@@ -215,7 +243,6 @@ func (w *WAL) ReadAll() ([]Record, error) {
 		records = append(records, rec)
 	}
 
-	// Seek back to end so subsequent buffered writes append correctly
 	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
 		return records, err
 	}
@@ -260,7 +287,9 @@ func (w *WAL) ReadFrom(fromLSN LSN) ([]Record, error) {
 	return filtered, nil
 }
 
-// Truncate removes all WAL records, resetting the file.
+// Truncate removes all WAL records. The in-memory next LSN is left unchanged
+// so a later append does not reuse sequence numbers. Reopening an empty file
+// still starts at LSN 1; checkpoint and recovery do not call Truncate.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -271,53 +300,69 @@ func (w *WAL) Truncate() error {
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	w.buf.Reset(w.file) // reset buffer to point at truncated file
+	w.buf.Reset(w.file)
+	w.durable = true
 	return nil
 }
 
 // --- Internal helpers ---
 
-func (w *WAL) writeRecord(rec *Record) error {
-	var dataLen int
-	switch rec.Type {
-	case RecordUpdateDelta:
-		dataLen = len(rec.DeltaData)
-	case RecordUpdate:
-		dataLen = len(rec.BeforeData) + len(rec.AfterData)
+func (w *WAL) forceLocked() error {
+	if w.durable {
+		return nil
 	}
+	if err := w.buf.Flush(); err != nil {
+		return err
+	}
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	w.durable = true
+	return nil
+}
+
+func (w *WAL) writeRecord(rec *Record) error {
+	payload := recordPayload(rec)
 
 	header := make([]byte, recordHeaderSize)
 	binary.LittleEndian.PutUint64(header[0:], uint64(rec.LSN))
 	binary.LittleEndian.PutUint64(header[8:], uint64(rec.TxID))
 	header[16] = rec.Type
 	binary.LittleEndian.PutUint32(header[17:], uint32(rec.PageID))
-	binary.LittleEndian.PutUint32(header[21:], uint32(dataLen))
+	binary.LittleEndian.PutUint32(header[21:], uint32(len(payload)))
+
+	sum := crc32.Update(0, crc32.IEEETable, header)
+	sum = crc32.Update(sum, crc32.IEEETable, payload)
+	var crc [checksumSize]byte
+	binary.LittleEndian.PutUint32(crc[:], sum)
 
 	if _, err := w.buf.Write(header); err != nil {
 		return err
 	}
-
-	switch rec.Type {
-	case RecordUpdateDelta:
-		if len(rec.DeltaData) > 0 {
-			if _, err := w.buf.Write(rec.DeltaData); err != nil {
-				return err
-			}
-		}
-	case RecordUpdate:
-		if len(rec.BeforeData) > 0 {
-			if _, err := w.buf.Write(rec.BeforeData); err != nil {
-				return err
-			}
-		}
-		if len(rec.AfterData) > 0 {
-			if _, err := w.buf.Write(rec.AfterData); err != nil {
-				return err
-			}
+	if len(payload) > 0 {
+		if _, err := w.buf.Write(payload); err != nil {
+			return err
 		}
 	}
-
+	if _, err := w.buf.Write(crc[:]); err != nil {
+		return err
+	}
+	w.durable = false
 	return nil
+}
+
+func recordPayload(rec *Record) []byte {
+	switch rec.Type {
+	case RecordUpdateDelta:
+		return rec.DeltaData
+	case RecordUpdate:
+		buf := make([]byte, 0, len(rec.BeforeData)+len(rec.AfterData))
+		buf = append(buf, rec.BeforeData...)
+		buf = append(buf, rec.AfterData...)
+		return buf
+	default:
+		return nil
+	}
 }
 
 func (w *WAL) readRecord() (Record, error) {
@@ -334,48 +379,70 @@ func (w *WAL) readRecord() (Record, error) {
 	}
 
 	dataLen := int(binary.LittleEndian.Uint32(header[21:]))
+	payload := make([]byte, dataLen)
 	if dataLen > 0 {
-		switch rec.Type {
-		case RecordUpdate:
-			rec.BeforeData = make([]byte, storage.PageSize)
-			if _, err := io.ReadFull(w.file, rec.BeforeData); err != nil {
-				return rec, err
-			}
-			rec.AfterData = make([]byte, storage.PageSize)
-			if _, err := io.ReadFull(w.file, rec.AfterData); err != nil {
-				return rec, err
-			}
-		case RecordUpdateDelta:
-			rec.DeltaData = make([]byte, dataLen)
-			if _, err := io.ReadFull(w.file, rec.DeltaData); err != nil {
-				return rec, err
-			}
-		default:
-			buf := make([]byte, dataLen)
-			if _, err := io.ReadFull(w.file, buf); err != nil {
-				return rec, err
-			}
+		if _, err := io.ReadFull(w.file, payload); err != nil {
+			return Record{}, err
 		}
 	}
 
+	var crcBuf [checksumSize]byte
+	if _, err := io.ReadFull(w.file, crcBuf[:]); err != nil {
+		return Record{}, err
+	}
+	sum := crc32.Update(0, crc32.IEEETable, header)
+	sum = crc32.Update(sum, crc32.IEEETable, payload)
+	if sum != binary.LittleEndian.Uint32(crcBuf[:]) {
+		return Record{}, ErrChecksum
+	}
+
+	switch rec.Type {
+	case RecordUpdate:
+		if len(payload) < 2*storage.PageSize {
+			return Record{}, fmt.Errorf("short update payload (%d bytes)", len(payload))
+		}
+		rec.BeforeData = payload[:storage.PageSize]
+		rec.AfterData = payload[storage.PageSize : 2*storage.PageSize]
+	case RecordUpdateDelta:
+		rec.DeltaData = payload
+	}
 	return rec, nil
 }
 
-func (w *WAL) findLastLSN() (LSN, error) {
+// truncateTornTail scans to the last complete record and truncates anything
+// past it (a torn write or a bad checksum). The file position is left at the
+// new end. Returns the last valid LSN, or 0 when the file has no records.
+func (w *WAL) truncateTornTail() (LSN, error) {
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return 0, err
 	}
 
 	var lastLSN LSN
+	goodEnd := int64(0)
 	for {
 		rec, err := w.readRecord()
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err == io.EOF {
+			break
+		}
+		if err == io.ErrUnexpectedEOF || errors.Is(err, ErrChecksum) {
 			break
 		}
 		if err != nil {
-			return lastLSN, err
+			return 0, err
+		}
+		off, err := w.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, err
 		}
 		lastLSN = rec.LSN
+		goodEnd = off
+	}
+
+	if err := w.file.Truncate(goodEnd); err != nil {
+		return 0, err
+	}
+	if _, err := w.file.Seek(goodEnd, io.SeekStart); err != nil {
+		return 0, err
 	}
 	return lastLSN, nil
 }

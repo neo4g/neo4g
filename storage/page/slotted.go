@@ -79,10 +79,10 @@ func (sp *SlottedPage) SetNextPage(id storage.PageID) {
 // --- Record operations ---
 
 // InsertRecord adds a record to the page. Returns the slot index on success.
+// The page is left unchanged when the record cannot fit.
 func (sp *SlottedPage) InsertRecord(data []byte) (uint16, error) {
-	needed := uint16(len(data)) + SlotEntrySize
-	if sp.FreeSpace() < needed {
-		return 0, errors.New("not enough free space in page")
+	if len(data) >= storage.PageSize || len(data)+SlotEntrySize > int(sp.FreeSpace()) {
+		return 0, errors.New("record does not fit in one page")
 	}
 
 	slotCount := sp.SlotCount()
@@ -122,6 +122,10 @@ func (sp *SlottedPage) GetRecord(slot uint16) ([]byte, error) {
 func (sp *SlottedPage) UpdateRecord(slot uint16, data []byte) error {
 	if slot >= sp.SlotCount() {
 		return fmt.Errorf("slot %d out of range", slot)
+	}
+
+	if len(data) >= storage.PageSize {
+		return errors.New("record does not fit in one page")
 	}
 
 	oldOffset, oldLength := sp.slotEntry(slot)
@@ -173,26 +177,37 @@ func (sp *SlottedPage) IsDeleted(slot uint16) bool {
 	return offset == tombstoneOffset
 }
 
-// Compact defragments the page by repacking all live records.
+// Compact defragments the page by repacking live records through a scratch
+// buffer. Tombstone slots keep their indexes.
 func (sp *SlottedPage) Compact() {
 	slotCount := sp.SlotCount()
+	var scratch storage.Page
+	copy(scratch[:HeaderSize], sp.page[:HeaderSize])
 	writePos := uint16(storage.PageSize)
 
 	for i := uint16(0); i < slotCount; i++ {
 		offset, length := sp.slotEntry(i)
-		if offset == tombstoneOffset || length == 0 {
+		slotPos := HeaderSize + int(i)*SlotEntrySize
+		if offset == tombstoneOffset {
+			binary.LittleEndian.PutUint16(scratch[slotPos:], tombstoneOffset)
+			binary.LittleEndian.PutUint16(scratch[slotPos+2:], 0)
+			continue
+		}
+		if length == 0 {
+			binary.LittleEndian.PutUint16(scratch[slotPos:], offset)
+			binary.LittleEndian.PutUint16(scratch[slotPos+2:], 0)
 			continue
 		}
 
 		newOffset := writePos - length
-		if newOffset != offset {
-			copy(sp.page[newOffset:newOffset+length], sp.page[offset:offset+length])
-			sp.setSlotEntry(i, newOffset, length)
-		}
+		copy(scratch[newOffset:newOffset+length], sp.page[offset:offset+length])
+		binary.LittleEndian.PutUint16(scratch[slotPos:], newOffset)
+		binary.LittleEndian.PutUint16(scratch[slotPos+2:], length)
 		writePos = newOffset
 	}
 
-	binary.LittleEndian.PutUint16(sp.page[offFreeEnd:], writePos)
+	binary.LittleEndian.PutUint16(scratch[offFreeEnd:], writePos)
+	*sp.page = scratch
 }
 
 // --- Internal helpers ---

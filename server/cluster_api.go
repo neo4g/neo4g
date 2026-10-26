@@ -156,7 +156,7 @@ func (s *Server) applyRole(role, primaryAddr string, generation uint64) error {
 		s.mu.Unlock()
 		return errStaleGeneration
 	}
-	if generation == s.fenceGen && role != s.role && !(generation == 0 && s.fenceGen == 0) {
+	if generation == s.fenceGen && role != s.role && (generation != 0 || s.fenceGen != 0) {
 		s.mu.Unlock()
 		return errStaleGeneration
 	}

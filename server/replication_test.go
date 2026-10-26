@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"os"
@@ -136,9 +137,12 @@ func TestPullWALReportsGapAfterCheckpoint(t *testing.T) {
 	if err := srv.Engine().Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.PullWAL(ctx, &rpcpb.PullWALRequest{FromLsn: 1})
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("PullWAL gap: code=%v err=%v", status.Code(err), err)
+	kept, err := client.PullWAL(ctx, &rpcpb.PullWALRequest{FromLsn: 1})
+	if err != nil {
+		t.Fatalf("checkpoint must keep the log: %v", err)
+	}
+	if len(kept.GetRecords()) == 0 {
+		t.Fatal("checkpoint dropped WAL records")
 	}
 	after, err := client.Health(ctx, &rpcpb.HealthRequest{})
 	if err != nil {
@@ -147,7 +151,24 @@ func TestPullWALReportsGapAfterCheckpoint(t *testing.T) {
 	if after.GetLsn() < tip {
 		t.Fatalf("published tip dropped from %d to %d", tip, after.GetLsn())
 	}
-	if after.GetStatus() == "ok" && after.GetLsn() == 0 {
+
+	// A checkpoint no longer punches a hole. An empty pull while the published
+	// tip is still ahead is a hard error, which is what a truncated prefix is.
+	if err := srv.Engine().WAL().Truncate(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.PullWAL(ctx, &rpcpb.PullWALRequest{FromLsn: 1})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("PullWAL gap: code=%v err=%v", status.Code(err), err)
+	}
+	gapped, err := client.Health(ctx, &rpcpb.HealthRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gapped.GetLsn() < tip {
+		t.Fatalf("published tip dropped from %d to %d after truncation", tip, gapped.GetLsn())
+	}
+	if gapped.GetStatus() == "ok" && gapped.GetLsn() == 0 {
 		t.Fatal("health hid the truncated log")
 	}
 }
@@ -182,6 +203,62 @@ func TestPullWALCapsBatch(t *testing.T) {
 	if pulled.GetRecords()[0].GetLsn() != uint64(all[0].LSN) {
 		t.Fatalf("first record LSN %d, want %d", pulled.GetRecords()[0].GetLsn(), all[0].LSN)
 	}
+}
+
+func TestReplicaAppliesSuccessiveCreates(t *testing.T) {
+	primary, client := startGRPCServer(t)
+	cfg := testConfig(t)
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.GRPCAddr = "127.0.0.1:0"
+	cfg.Role = "replica"
+	cfg.PrimaryAddr = primary.BoundGRPCAddr()
+	cfg.NodeID = "node2"
+	cfg.ReplPollInterval = 20 * time.Millisecond
+
+	replica, err := NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		replica.Shutdown(ctx)
+	})
+	go func() {
+		if err := replica.ListenAndServe(); err != nil {
+			t.Errorf("replica ListenAndServe: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := replica.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, q := range []string{
+		`CREATE (n:Person {name: "Alice"})`,
+		`CREATE (n:Person {name: "Bob"})`,
+	} {
+		created, err := client.ExecuteQuery(ctx, &rpcpb.ExecuteQueryRequest{Query: q})
+		if err != nil || created.GetHttpStatus() != http.StatusOK {
+			t.Fatalf("create %q: status %d err %v", q, created.GetHttpStatus(), err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var body []byte
+	for time.Now().Before(deadline) {
+		if err := replica.replicationErr(); err != nil {
+			t.Fatal(err)
+		}
+		var code int
+		code, body = replica.executeQuery(`MATCH (n:Person) RETURN n.name`, nil)
+		if code == http.StatusOK && bytes.Contains(body, []byte("Alice")) && bytes.Contains(body, []byte("Bob")) {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("replica did not apply both creates (err=%v): %s", replica.replicationErr(), body)
 }
 
 func TestAppliedLSNRoundTrip(t *testing.T) {

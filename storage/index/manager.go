@@ -43,6 +43,7 @@ func NewManager(p *pool.Pool, dm *disk.Manager) (*Manager, error) {
 		InIndex:   inIdx,
 	}
 
+	m.bindRootUpdaters(dm)
 	if err := m.persistRoots(dm); err != nil {
 		return nil, fmt.Errorf("persist index roots: %w", err)
 	}
@@ -62,12 +63,39 @@ func LoadManager(p *pool.Pool, dm *disk.Manager) (*Manager, error) {
 		return nil, nil
 	}
 
-	return &Manager{
+	m := &Manager{
 		NodeIndex: LoadBTree(p, dm, nr),
 		EdgeIndex: LoadBTree(p, dm, er),
 		OutIndex:  LoadBTree(p, dm, or),
 		InIndex:   LoadBTree(p, dm, ir),
-	}, nil
+	}
+	m.bindRootUpdaters(dm)
+	return m, nil
+}
+
+func (m *Manager) bindRootUpdaters(dm *disk.Manager) {
+	m.NodeIndex.SetRootUpdater(dm.SetNodeIndexRoot)
+	m.EdgeIndex.SetRootUpdater(dm.SetEdgeIndexRoot)
+	m.OutIndex.SetRootUpdater(dm.SetOutIndexRoot)
+	m.InIndex.SetRootUpdater(dm.SetInIndexRoot)
+}
+
+// NoteCommittedRoots records each tree's current root as committed.
+func (m *Manager) NoteCommittedRoots() {
+	m.NodeIndex.NoteCommittedRoot()
+	m.EdgeIndex.NoteCommittedRoot()
+	m.OutIndex.NoteCommittedRoot()
+	m.InIndex.NoteCommittedRoot()
+}
+
+// RevertRoots restores each tree's root to the last committed page ID and
+// writes those IDs back into the catalog.
+func (m *Manager) RevertRoots(dm *disk.Manager) {
+	m.NodeIndex.RevertRoot()
+	m.EdgeIndex.RevertRoot()
+	m.OutIndex.RevertRoot()
+	m.InIndex.RevertRoot()
+	_ = m.persistRoots(dm)
 }
 
 // SetPageLogger installs (or clears) a callback on all four B+Trees so every

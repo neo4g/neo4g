@@ -184,7 +184,8 @@ func compare(op parser.TokenType, left, right interface{}) (interface{}, error) 
 		case parser.NEQ:
 			return left != nil || right != nil, nil
 		default:
-			return nil, nil
+			// Two-valued logic: a missing property fails <, >, <=, and >=.
+			return false, nil
 		}
 	}
 

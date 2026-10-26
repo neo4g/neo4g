@@ -241,3 +241,18 @@ func TestSetNextPage(t *testing.T) {
 		t.Errorf("expected next page 42, got %d", sp.GetNextPage())
 	}
 }
+
+func TestInsertRecordTooLargeLeavesPageUntouched(t *testing.T) {
+	sp := newTestSlottedPage()
+	before := *sp.page
+	_, err := sp.InsertRecord(make([]byte, 70000))
+	if err == nil {
+		t.Fatal("expected oversized record to be rejected")
+	}
+	if sp.SlotCount() != 0 {
+		t.Fatalf("slot count = %d", sp.SlotCount())
+	}
+	if *sp.page != before {
+		t.Fatal("rejected insert mutated the page")
+	}
+}

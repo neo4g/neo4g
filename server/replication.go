@@ -286,9 +286,23 @@ func (r *Replicator) resolvePending() error {
 }
 
 func (r *Replicator) applyTx(txID uint64) error {
+	// The catalog record is logged at commit, after the page images. Install
+	// it first so pageCount covers those pages. Extending the file first would
+	// rewrite the catalog the header delta still has to match.
+	if err := r.applyTxPages(txID, true); err != nil {
+		return err
+	}
+	return r.applyTxPages(txID, false)
+}
+
+func (r *Replicator) applyTxPages(txID uint64, headerOnly bool) error {
 	for i := range r.pending {
 		rec := r.pending[i].rec
 		if r.pending[i].resolved || rec.GetTxId() != txID || !isPageRecord(byte(rec.GetType())) {
+			continue
+		}
+		isHeader := storage.PageID(rec.GetPageId()) == storage.HeaderPageID
+		if isHeader != headerOnly {
 			continue
 		}
 		if err := r.applyPageRecord(rec); err != nil {
@@ -330,6 +344,13 @@ func (r *Replicator) advanceApplied() error {
 func (r *Replicator) applyPageRecord(rec *rpcpb.WALRecord) error {
 	pool := r.engine.Pool()
 	pageID := storage.PageID(rec.GetPageId())
+	if pageID != storage.HeaderPageID {
+		// Redo extends the file for the same reason: the page image can
+		// precede the catalog record that publishes the new page count.
+		if err := r.engine.DiskManager().EnsurePage(pageID); err != nil {
+			return fmt.Errorf("ensure page %d: %w", pageID, err)
+		}
+	}
 	page, err := pool.FetchPage(pageID)
 	if err != nil {
 		return fmt.Errorf("fetch page %d: %w", pageID, err)
@@ -362,6 +383,19 @@ func (r *Replicator) installPage(page *storage.Page, rec *rpcpb.WALRecord) (bool
 func (r *Replicator) installDelta(page *storage.Page, rec *rpcpb.WALRecord) (bool, error) {
 	delta := rec.GetData()
 	matchesBefore, matchesAfter := deltaState(page, delta)
+	if !matchesBefore && !matchesAfter && storage.PageID(rec.GetPageId()) == storage.HeaderPageID {
+		// Commit logs the catalog from the last flushed header. Bootstrap
+		// advances the in-memory image and leaves that flushed page behind,
+		// so the live frame is not the delta's before-image.
+		diskHeader, err := r.engine.DiskManager().ReadPage(storage.HeaderPageID)
+		if err != nil {
+			return false, err
+		}
+		if before, after := deltaState(diskHeader, delta); before {
+			copy(page[:], diskHeader[:])
+			matchesBefore, matchesAfter = before, after
+		}
+	}
 	if matchesBefore && matchesAfter {
 		return false, nil
 	}
@@ -409,7 +443,7 @@ func (r *Replicator) installFull(page *storage.Page, rec *rpcpb.WALRecord) (bool
 	return true, nil
 }
 
-func (r *Replicator) logControl(rec *rpcpb.WALRecord, sync bool) error {
+func (r *Replicator) logControl(rec *rpcpb.WALRecord, forceSync bool) error {
 	primaryLSN := wal.LSN(rec.GetLsn())
 	err := r.logLocal(primaryLSN, func() (wal.LSN, error) {
 		w := r.engine.WAL()
@@ -431,7 +465,7 @@ func (r *Replicator) logControl(rec *rpcpb.WALRecord, sync bool) error {
 	if err != nil {
 		return fmt.Errorf("write local WAL: %w", err)
 	}
-	if sync && r.engine.WAL() != nil {
+	if forceSync && r.engine.WAL() != nil {
 		if err := r.engine.WAL().Sync(); err != nil {
 			return fmt.Errorf("sync WAL: %w", err)
 		}
