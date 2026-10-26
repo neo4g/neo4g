@@ -153,9 +153,9 @@ func (rm *Manager) logPageWrite(txID storage.TxID, pageID storage.PageID, before
 
 // logDirty logs a page mutation. If logging fails, the frame is restored to
 // before and unpinned so a later flush cannot write the after-image.
-func (rm *Manager) logDirty(txID storage.TxID, pageID storage.PageID, before, page *storage.Page) error {
-	if err := rm.logPageWrite(txID, pageID, before, page); err != nil {
-		*page = *before
+func (rm *Manager) logDirty(txID storage.TxID, pageID storage.PageID, before, after *storage.Page) error {
+	if err := rm.logPageWrite(txID, pageID, before, after); err != nil {
+		*after = *before
 		rm.pool.UnpinPage(pageID, false)
 		return err
 	}

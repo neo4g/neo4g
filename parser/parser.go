@@ -374,7 +374,7 @@ func (p *parser) parseEdgePattern() (*EdgePattern, error) {
 		p.advance() // consume <-
 		ep.Dir = DirLeft
 	} else if p.at(DASH) {
-		p.advance() // consume -
+		p.advance()       // consume -
 		ep.Dir = DirRight // tentatively right, confirmed by trailing ->
 	} else {
 		return nil, fmt.Errorf("expected '-' or '<-' at position %d", p.peek().Pos)
