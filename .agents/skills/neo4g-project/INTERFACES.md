@@ -9,7 +9,7 @@ The top-level interface that the query engine (or a user) talks to.
 ```go
 package storage
 
-import "github.com/seankohjs/neo4g/graph"
+import "github.com/neo4g/neo4g/graph"
 
 type Store interface {
     CreateNode(labels []string, props map[string]graph.Value) (graph.NodeID, error)

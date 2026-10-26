@@ -34,7 +34,7 @@ Lowest layer of the storage engine. Manages raw page I/O against a single `.db` 
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `PageID`, `Page`, `PageSize`, constants
+- `github.com/neo4g/neo4g/storage` — `PageID`, `Page`, `PageSize`, constants
 
 ### External
 - Standard library: `encoding/binary`, `os`, `sync`

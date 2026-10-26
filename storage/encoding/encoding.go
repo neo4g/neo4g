@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/seankohjs/neo4g/graph"
+	"github.com/neo4g/neo4g/graph"
 )
 
 // EncodeNode serializes a Node into a byte slice for storage in a slotted page.

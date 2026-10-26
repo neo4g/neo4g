@@ -52,3 +52,4 @@
 - 2026-03-19: Package rename — `query/` → `parser/` for lexer/AST/parser; new `query/` for executor engine
 - 2026-03-19: Query executor engine — expression evaluator, parallel MATCH via errgroup, WHERE filtering, action dispatch (CREATE/RETURN/SET/DELETE), wired into HTTP handler (`query/`, `server/handler.go`, `server/http.go`)
 - 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP
+- 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)

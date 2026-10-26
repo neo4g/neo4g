@@ -4,12 +4,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/index"
-	"github.com/seankohjs/neo4g/storage/pool"
-	"github.com/seankohjs/neo4g/storage/txn"
-	"github.com/seankohjs/neo4g/storage/wal"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/index"
+	"github.com/neo4g/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/storage/txn"
+	"github.com/neo4g/neo4g/storage/wal"
 )
 
 func newTestManager(t *testing.T) *Manager {

@@ -35,9 +35,9 @@ Disk-resident B+Tree index implementation and an index manager that owns four in
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `PageID`, `RID`, `Page`, page type constants, `Index` interface
-- `github.com/seankohjs/neo4g/storage/disk` — `disk.Manager` (for page allocation and root persistence)
-- `github.com/seankohjs/neo4g/storage/pool` — `pool.Pool` (page access)
+- `github.com/neo4g/neo4g/storage` — `PageID`, `RID`, `Page`, page type constants, `Index` interface
+- `github.com/neo4g/neo4g/storage/disk` — `disk.Manager` (for page allocation and root persistence)
+- `github.com/neo4g/neo4g/storage/pool` — `pool.Pool` (page access)
 
 ### External
 - Standard library: `encoding/binary`

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seankohjs/neo4g/parser"
-	"github.com/seankohjs/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/parser"
+	"github.com/neo4g/neo4g/rpcpb"
 )
 
 const readAfterWriteWindow = 2 * time.Second

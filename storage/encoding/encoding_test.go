@@ -3,7 +3,7 @@ package encoding
 import (
 	"testing"
 
-	"github.com/seankohjs/neo4g/graph"
+	"github.com/neo4g/neo4g/graph"
 )
 
 func TestEncodeDecodeNode(t *testing.T) {

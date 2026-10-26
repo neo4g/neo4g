@@ -33,7 +33,7 @@ Binary serialization and deserialization of `graph.Node` and `graph.Edge` struct
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/graph` — `Node`, `Edge`, `Value`, `ValueType` constants
+- `github.com/neo4g/neo4g/graph` — `Node`, `Edge`, `Value`, `ValueType` constants
 
 ### External
 - Standard library: `encoding/binary`, `bytes`

@@ -40,15 +40,15 @@ Top-level database engine lifecycle and HTTP server. Wires all six storage layer
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `Store`, `Scanner` interfaces
-- `github.com/seankohjs/neo4g/storage/disk` — `disk.Manager`
-- `github.com/seankohjs/neo4g/storage/wal` — `wal.WAL`
-- `github.com/seankohjs/neo4g/storage/pool` — `pool.Pool`
-- `github.com/seankohjs/neo4g/storage/index` — `index.Manager`
-- `github.com/seankohjs/neo4g/storage/record` — `record.Manager`
-- `github.com/seankohjs/neo4g/storage/txn` — `txn.Manager`, `txn.Recover`
-- `github.com/seankohjs/neo4g/parser` — query parsing
-- `github.com/seankohjs/neo4g/query` — query execution
+- `github.com/neo4g/neo4g/storage` — `Store`, `Scanner` interfaces
+- `github.com/neo4g/neo4g/storage/disk` — `disk.Manager`
+- `github.com/neo4g/neo4g/storage/wal` — `wal.WAL`
+- `github.com/neo4g/neo4g/storage/pool` — `pool.Pool`
+- `github.com/neo4g/neo4g/storage/index` — `index.Manager`
+- `github.com/neo4g/neo4g/storage/record` — `record.Manager`
+- `github.com/neo4g/neo4g/storage/txn` — `txn.Manager`, `txn.Recover`
+- `github.com/neo4g/neo4g/parser` — query parsing
+- `github.com/neo4g/neo4g/query` — query execution
 
 ### External
 - `google.golang.org/grpc` — internal node API (health, role, query forwarding, WAL pull, checksum). Client traffic stays on `net/http`.

@@ -12,8 +12,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/seankohjs/neo4g/query"
-	"github.com/seankohjs/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/query"
+	"github.com/neo4g/neo4g/rpcpb"
 )
 
 // Server wraps the database Engine with an HTTP API.

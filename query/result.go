@@ -1,6 +1,6 @@
 package query
 
-import "github.com/seankohjs/neo4g/graph"
+import "github.com/neo4g/neo4g/graph"
 
 // Row holds variable bindings for a single matched result.
 // Keys are variable names; values are *graph.Node, *graph.Edge, or primitives.

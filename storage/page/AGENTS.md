@@ -33,7 +33,7 @@ Slotted page layout for storing variable-length records within a fixed 8KB page.
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `Page`, `PageSize`
+- `github.com/neo4g/neo4g/storage` — `Page`, `PageSize`
 
 ### External
 - Standard library: `encoding/binary`

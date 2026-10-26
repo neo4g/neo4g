@@ -3,7 +3,7 @@ package wal
 import (
 	"encoding/binary"
 
-	"github.com/seankohjs/neo4g/storage"
+	"github.com/neo4g/neo4g/storage"
 )
 
 // Bidirectional delta format — each chunk stores both before and after bytes

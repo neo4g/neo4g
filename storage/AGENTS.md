@@ -65,7 +65,7 @@ The complete custom storage engine for Neo4g. Organized as six strictly layered 
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/graph` — `Node`, `Edge`, `Value` types (used in `ifaces.go`)
+- `github.com/neo4g/neo4g/graph` — `Node`, `Edge`, `Value` types (used in `ifaces.go`)
 
 ### External
 - Standard library only

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seankohjs/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/rpcpb"
 )
 
 // Heartbeat periodically pings all nodes over gRPC and updates cluster state.

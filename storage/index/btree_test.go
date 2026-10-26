@@ -4,10 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/pool"
 )
 
 func newTestBTree(t *testing.T) *BTree {

@@ -5,12 +5,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/seankohjs/neo4g/parser"
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/index"
-	"github.com/seankohjs/neo4g/storage/pool"
-	"github.com/seankohjs/neo4g/storage/record"
+	"github.com/neo4g/neo4g/parser"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/index"
+	"github.com/neo4g/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/storage/record"
 )
 
 // testStack spins up a full storage stack in a temp dir.

@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/seankohjs/neo4g/gateway"
+	"github.com/neo4g/neo4g/gateway"
 )
 
 func main() {

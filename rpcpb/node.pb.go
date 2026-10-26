@@ -658,7 +658,7 @@ const file_node_proto_rawDesc = "" +
 	"\aSetRole\x12!.neo4g.internal.v1.SetRoleRequest\x1a\".neo4g.internal.v1.SetRoleResponse\x12_\n" +
 	"\fExecuteQuery\x12&.neo4g.internal.v1.ExecuteQueryRequest\x1a'.neo4g.internal.v1.ExecuteQueryResponse\x12P\n" +
 	"\aPullWAL\x12!.neo4g.internal.v1.PullWALRequest\x1a\".neo4g.internal.v1.PullWALResponse\x12S\n" +
-	"\bChecksum\x12\".neo4g.internal.v1.ChecksumRequest\x1a#.neo4g.internal.v1.ChecksumResponseB\"Z github.com/seankohjs/neo4g/rpcpbb\x06proto3"
+	"\bChecksum\x12\".neo4g.internal.v1.ChecksumRequest\x1a#.neo4g.internal.v1.ChecksumResponseB\x1eZ\x1cgithub.com/neo4g/neo4g/rpcpbb\x06proto3"
 
 var (
 	file_node_proto_rawDescOnce sync.Once

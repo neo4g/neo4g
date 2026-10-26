@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/parser"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/parser"
 )
 
 // evalExpr evaluates an expression AST node against a row of variable

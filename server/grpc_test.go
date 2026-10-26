@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/seankohjs/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/rpcpb"
 )
 
 func startGRPCServer(t *testing.T) (*Server, rpcpb.NodeClient) {

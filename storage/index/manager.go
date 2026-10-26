@@ -3,10 +3,10 @@ package index
 import (
 	"fmt"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/pool"
 )
 
 // Manager holds the B+Tree indexes used by the record manager.

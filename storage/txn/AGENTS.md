@@ -36,10 +36,10 @@ Transaction manager providing ACID guarantees and ARIES-inspired crash recovery.
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `TxID`, `PageID`
-- `github.com/seankohjs/neo4g/storage/disk` — `disk.Manager` (header flush, page writes)
-- `github.com/seankohjs/neo4g/storage/pool` — `pool.Pool` (page dirty marking)
-- `github.com/seankohjs/neo4g/storage/wal` — `wal.WAL` (log writes, `ReadAll`, `Truncate`)
+- `github.com/neo4g/neo4g/storage` — `TxID`, `PageID`
+- `github.com/neo4g/neo4g/storage/disk` — `disk.Manager` (header flush, page writes)
+- `github.com/neo4g/neo4g/storage/pool` — `pool.Pool` (page dirty marking)
+- `github.com/neo4g/neo4g/storage/wal` — `wal.WAL` (log writes, `ReadAll`, `Truncate`)
 
 ### External
 - Standard library: `sync`

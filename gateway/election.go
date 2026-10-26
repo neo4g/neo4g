@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seankohjs/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/rpcpb"
 )
 
 // Election handles leader election when the primary goes down.

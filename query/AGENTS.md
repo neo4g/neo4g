@@ -38,9 +38,9 @@ Query execution engine. Takes a parsed `*parser.Statement` AST and executes it a
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/graph` — `Node`, `Edge`, `Value` types
-- `github.com/seankohjs/neo4g/parser` — AST node types
-- `github.com/seankohjs/neo4g/storage` — `Store` and `Scanner` interfaces
+- `github.com/neo4g/neo4g/graph` — `Node`, `Edge`, `Value` types
+- `github.com/neo4g/neo4g/parser` — AST node types
+- `github.com/neo4g/neo4g/storage` — `Store` and `Scanner` interfaces
 
 ### External
 - `golang.org/x/sync/errgroup` — parallel pattern resolution

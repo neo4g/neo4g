@@ -5,9 +5,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/parser"
-	"github.com/seankohjs/neo4g/storage"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/parser"
+	"github.com/neo4g/neo4g/storage"
 	"golang.org/x/sync/errgroup"
 )
 

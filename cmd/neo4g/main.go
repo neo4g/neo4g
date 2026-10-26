@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/seankohjs/neo4g/server"
+	"github.com/neo4g/neo4g/server"
 )
 
 func main() {

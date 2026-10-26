@@ -36,7 +36,7 @@ Write-ahead log for crash recovery and durability. Every page modification is lo
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `TxID`, `PageID`, `Page`, `PageSize`
+- `github.com/neo4g/neo4g/storage` — `TxID`, `PageID`, `Page`, `PageSize`
 
 ### External
 - Standard library: `bufio`, `encoding/binary`, `io`, `os`, `sync`

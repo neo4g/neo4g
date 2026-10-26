@@ -34,8 +34,8 @@ In-memory page cache (buffer pool) that sits between the disk manager and all hi
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/storage` — `PageID`, `Page`, `PageManager` interface
-- `github.com/seankohjs/neo4g/storage/disk` — `disk.Manager` for disk reads/writes
+- `github.com/neo4g/neo4g/storage` — `PageID`, `Page`, `PageManager` interface
+- `github.com/neo4g/neo4g/storage/disk` — `disk.Manager` for disk reads/writes
 
 ### External
 - Standard library: `sync`, `sync/atomic`

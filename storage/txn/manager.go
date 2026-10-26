@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/pool"
-	"github.com/seankohjs/neo4g/storage/wal"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/pool"
+	"github.com/neo4g/neo4g/storage/wal"
 )
 
 // TxState tracks the current state of a transaction.

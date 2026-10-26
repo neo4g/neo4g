@@ -3,8 +3,8 @@ package query
 import (
 	"testing"
 
-	"github.com/seankohjs/neo4g/graph"
-	"github.com/seankohjs/neo4g/parser"
+	"github.com/neo4g/neo4g/graph"
+	"github.com/neo4g/neo4g/parser"
 )
 
 func testNode() *graph.Node {

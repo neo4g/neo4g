@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/seankohjs/neo4g/parser"
-	"github.com/seankohjs/neo4g/rpcpb"
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/wal"
+	"github.com/neo4g/neo4g/parser"
+	"github.com/neo4g/neo4g/rpcpb"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/wal"
 )
 
 var (

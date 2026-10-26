@@ -3,9 +3,9 @@ package txn
 import (
 	"fmt"
 
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
-	"github.com/seankohjs/neo4g/storage/wal"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage/wal"
 )
 
 func isUpdateRecord(t byte) bool {

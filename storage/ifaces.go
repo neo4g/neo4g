@@ -1,6 +1,6 @@
 package storage
 
-import "github.com/seankohjs/neo4g/graph"
+import "github.com/neo4g/neo4g/graph"
 
 // Store is the top-level CRUD interface for the property graph.
 // Implemented by record.Manager.

@@ -35,14 +35,14 @@ Record manager — the primary CRUD interface for nodes and edges in the propert
 ## Dependencies
 
 ### Internal
-- `github.com/seankohjs/neo4g/graph` — `Node`, `Edge`, `NodeID`, `EdgeID`, `Value`
-- `github.com/seankohjs/neo4g/storage` — `Store`, `Scanner` interfaces, `RID`, `PageID`
-- `github.com/seankohjs/neo4g/storage/disk` — `disk.Manager`
-- `github.com/seankohjs/neo4g/storage/encoding` — encode/decode
-- `github.com/seankohjs/neo4g/storage/index` — `index.Manager`
-- `github.com/seankohjs/neo4g/storage/page` — `SlottedPage`
-- `github.com/seankohjs/neo4g/storage/pool` — `pool.Pool`
-- `github.com/seankohjs/neo4g/storage/txn` — `txn.Manager` (optional)
+- `github.com/neo4g/neo4g/graph` — `Node`, `Edge`, `NodeID`, `EdgeID`, `Value`
+- `github.com/neo4g/neo4g/storage` — `Store`, `Scanner` interfaces, `RID`, `PageID`
+- `github.com/neo4g/neo4g/storage/disk` — `disk.Manager`
+- `github.com/neo4g/neo4g/storage/encoding` — encode/decode
+- `github.com/neo4g/neo4g/storage/index` — `index.Manager`
+- `github.com/neo4g/neo4g/storage/page` — `SlottedPage`
+- `github.com/neo4g/neo4g/storage/pool` — `pool.Pool`
+- `github.com/neo4g/neo4g/storage/txn` — `txn.Manager` (optional)
 
 ### External
 - Standard library: `sync`

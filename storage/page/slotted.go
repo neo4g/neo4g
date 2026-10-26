@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/seankohjs/neo4g/storage"
+	"github.com/neo4g/neo4g/storage"
 )
 
 // Page header layout constants.

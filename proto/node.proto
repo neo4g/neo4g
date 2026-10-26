@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package neo4g.internal.v1;
 
-option go_package = "github.com/seankohjs/neo4g/rpcpb";
+option go_package = "github.com/neo4g/neo4g/rpcpb";
 
 // Node is the internal API between the gateway and database nodes,
 // and between replicas and the primary. Clients keep using HTTP.

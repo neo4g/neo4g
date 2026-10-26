@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/seankohjs/neo4g/storage"
-	"github.com/seankohjs/neo4g/storage/disk"
+	"github.com/neo4g/neo4g/storage"
+	"github.com/neo4g/neo4g/storage/disk"
 )
 
 func newTestPool(t *testing.T, poolSize int) (*Pool, *disk.Manager) {

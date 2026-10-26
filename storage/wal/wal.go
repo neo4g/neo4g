@@ -12,7 +12,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/seankohjs/neo4g/storage"
+	"github.com/neo4g/neo4g/storage"
 )
 
 // Record types.
