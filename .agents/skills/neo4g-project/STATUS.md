@@ -24,7 +24,7 @@
 | **Formal interfaces** | `storage/` | `done` | Store, Scanner, Index, PageManager in storage/ifaces.go |
 | **Scanner methods** | `storage/record/` | `done` | ScanNodes, ScanEdges, Expand |
 | **Query parser** | `parser/` | `done` | Cypher-lite lexer + recursive-descent parser; tokens, AST, full test suite (renamed from query/) |
-| **Query executor** | `query/` | `done` | Expression evaluator, parallel MATCH resolution (errgroup), WHERE filtering, CREATE/RETURN/SET/DELETE dispatch |
+| **Query executor** | `query/` | `done` | Expression evaluator, parallel MATCH resolution (errgroup), WHERE filtering, CREATE/RETURN/SET/DELETE dispatch; join and comparison semantics |
 | **Query planner** | — | `not-started` | Logical → physical plan (future) |
 | **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
 | **HTTP API** | `server/` | `done` | Client `POST /api/query` and `GET /api/health`; graceful shutdown |
@@ -53,3 +53,4 @@
 - 2026-03-19: Query executor engine — expression evaluator, parallel MATCH via errgroup, WHERE filtering, action dispatch (CREATE/RETURN/SET/DELETE), wired into HTTP handler (`query/`, `server/handler.go`, `server/http.go`)
 - 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP
 - 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)
+- 2026-10-26: Fix MATCH correctness for empty joins, shared names, endpoints, property maps, labels, and comparisons; align write result columns (`query/`)

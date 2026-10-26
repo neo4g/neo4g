@@ -344,9 +344,16 @@ func TestCreateReturnsNodeData(t *testing.T) {
 		t.Fatalf("expected 1 created, got %d", len(res.Rows))
 	}
 	row := res.Rows[0]
-	labels, ok := row["labels"].([]string)
+	if len(res.Columns) != 1 || res.Columns[0] != "created" {
+		t.Fatalf("expected columns=[created], got %v", res.Columns)
+	}
+	node, ok := row["created"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected labels, got %T", row["labels"])
+		t.Fatalf("expected created node, got %#v", row)
+	}
+	labels, ok := node["labels"].([]string)
+	if !ok {
+		t.Fatalf("expected labels, got %T", node["labels"])
 	}
 	if len(labels) != 1 || labels[0] != "Person" {
 		t.Errorf("expected [Person], got %v", labels)
