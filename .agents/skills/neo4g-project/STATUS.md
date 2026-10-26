@@ -24,7 +24,7 @@
 | **Formal interfaces** | `storage/` | `done` | Store, Scanner, Index, PageManager in storage/ifaces.go |
 | **Scanner methods** | `storage/record/` | `done` | ScanNodes, ScanEdges, Expand |
 | **Query parser** | `parser/` | `done` | Cypher-lite lexer + recursive-descent parser; tokens, AST, full test suite (renamed from query/) |
-| **Query executor** | `query/` | `done` | Expression evaluator, parallel MATCH resolution (errgroup), WHERE filtering, CREATE/RETURN/SET/DELETE dispatch |
+| **Query executor** | `query/` | `done` | Expression evaluator, parallel MATCH resolution (errgroup), WHERE filtering, CREATE/RETURN/SET/DELETE dispatch; join and comparison semantics |
 | **Query planner** | — | `not-started` | Logical → physical plan (future) |
 | **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
 | **HTTP API** | `server/` | `done` | Client `POST /api/query` and `GET /api/health`; graceful shutdown |
@@ -53,6 +53,8 @@
 - 2026-03-19: Query executor engine — expression evaluator, parallel MATCH via errgroup, WHERE filtering, action dispatch (CREATE/RETURN/SET/DELETE), wired into HTTP handler (`query/`, `server/handler.go`, `server/http.go`)
 - 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP
 - 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)
+- 2026-10-26: Fix MATCH correctness for empty joins, shared names, endpoints, property maps, labels, and comparisons; align write result columns (`query/`)
 - 2026-10-26: Pull requests run `go test ./...` only; Docker image publish is skipped on `pull_request` (`.github/workflows/docker-publish.yml`)
+- 2026-10-26: Split MATCH expansion so the merged query executor stays within the lint complexity limit (`query/`)
 - 2026-10-26: Storage durability — persist B+Tree roots on split, force the WAL before data pages, log the header catalog, undo into the buffer pool, keep checkpoint history and monotonic LSNs, CRC torn tails (`storage/`)
 - 2026-10-26: Merged main's lint and test workflows; record-manager page parameter no longer shadows the page import (`storage/record`, `.github/workflows`)

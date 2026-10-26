@@ -313,6 +313,44 @@ func TestEvalANDShortCircuit(t *testing.T) {
 	}
 }
 
+func TestEvalNilInequalityIsFalse(t *testing.T) {
+	got, err := compare(parser.GT, nil, int64(18))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != false {
+		t.Fatalf("nil > 18 = %#v, want false", got)
+	}
+
+	row := Row{"n": &graph.Node{
+		ID:     1,
+		Labels: []string{"Person"},
+		Properties: map[string]graph.Value{
+			"name": graph.StringValue("Alice"),
+		},
+	}}
+	expr := &parser.BinaryExpr{
+		Op: parser.AND,
+		Left: &parser.BinaryExpr{
+			Op:    parser.GT,
+			Left:  &parser.PropExpr{Variable: "n", Key: "age"},
+			Right: &parser.LiteralExpr{Value: int64(18)},
+		},
+		Right: &parser.BinaryExpr{
+			Op:    parser.EQ,
+			Left:  &parser.PropExpr{Variable: "n", Key: "name"},
+			Right: &parser.LiteralExpr{Value: "Alice"},
+		},
+	}
+	got, err = evalExpr(expr, row, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != false {
+		t.Fatalf("missing age AND name = %#v, want false", got)
+	}
+}
+
 func TestEvalORShortCircuit(t *testing.T) {
 	expr := &parser.BinaryExpr{
 		Op:    parser.OR,
