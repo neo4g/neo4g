@@ -34,15 +34,25 @@ const (
 	headerEdgePageTail = 60
 )
 
+// beforeDataWrite runs immediately before a page is written to the data file.
+// The transaction manager installs it to force the WAL (group commit). The
+// callback must not call back into the disk manager.
+type beforeDataWrite func() error
+
 // Manager handles raw page I/O against a single data file.
 // It manages the header page, page allocation/deallocation via the free list,
 // and monotonically increasing ID counters for nodes and edges.
+//
+// Page 0 is written only by the disk manager. The buffer pool may cache it,
+// but a stale frame is never flushed over the header image held here.
 //
 // Thread safety: Manager is safe for concurrent use.
 type Manager struct {
 	mu          sync.Mutex
 	file        *os.File
 	headerDirty bool
+	headerGen   uint64
+	beforeWrite beforeDataWrite
 
 	pageCount  uint32
 	freeHead   storage.PageID
@@ -104,6 +114,87 @@ func (dm *Manager) Close() error {
 	return dm.file.Close()
 }
 
+// SetBeforeDataWrite installs the hook invoked before any data-file page write.
+// Pass nil to clear it. The hook must not call back into Manager.
+func (dm *Manager) SetBeforeDataWrite(fn func() error) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.beforeWrite = fn
+}
+
+// HeaderGen changes whenever the in-memory catalog changes, so a cached copy
+// of page 0 can tell that it is stale.
+func (dm *Manager) HeaderGen() uint64 {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.headerGen
+}
+
+// HeaderDirty reports whether the in-memory catalog differs from the last
+// header image written to disk.
+func (dm *Manager) HeaderDirty() bool {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.headerDirty
+}
+
+// HeaderImage returns the current in-memory catalog encoded as page 0.
+func (dm *Manager) HeaderImage() storage.Page {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.headerPageLocked()
+}
+
+// RestoreHeader replaces the in-memory catalog with the given page image.
+// The image is not written here; the caller flushes it when the change commits.
+func (dm *Manager) RestoreHeader(p *storage.Page) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.applyHeaderLocked(p)
+	dm.touchHeaderLocked()
+}
+
+// EnsurePage makes page id readable and writable. Pages already present in the
+// file are not rewritten. The file is extended with zero pages only past its
+// current end, and pageCount grows to include id.
+func (dm *Manager) EnsurePage(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	need := uint32(id) + 1
+	info, err := dm.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat database file: %w", err)
+	}
+	filePages := uint32(info.Size() / storage.PageSize)
+	var zero storage.Page
+	for p := filePages; p < need; p++ {
+		if err := dm.writePageLocked(storage.PageID(p), &zero); err != nil {
+			return fmt.Errorf("extend file to page %d: %w", p, err)
+		}
+	}
+	if need > dm.pageCount {
+		dm.pageCount = need
+		dm.touchHeaderLocked()
+	}
+	return nil
+}
+
+// InstallHeaderImage adopts p as the catalog and writes it to page 0.
+// This is the pool's only path for persisting a header frame, so the disk
+// manager stays the single writer of page 0.
+func (dm *Manager) InstallHeaderImage(p *storage.Page) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.applyHeaderLocked(p)
+	dm.headerGen++
+	if err := dm.writePageLocked(storage.HeaderPageID, p); err != nil {
+		return err
+	}
+	dm.headerDirty = false
+	return nil
+}
+
 // FlushHeader writes the in-memory header to disk if it has been modified.
 // Called by the transaction manager at commit time to batch header writes.
 func (dm *Manager) FlushHeader() error {
@@ -137,23 +228,26 @@ func (dm *Manager) ReadPage(id storage.PageID) (*storage.Page, error) {
 }
 
 // WritePage writes a page to disk at the position determined by its ID.
+// Page 0 updates the in-memory catalog from p so a redo/undo of the header
+// cannot leave memory and disk disagreeing.
 func (dm *Manager) WritePage(id storage.PageID, p *storage.Page) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
+	if id == storage.HeaderPageID {
+		dm.applyHeaderLocked(p)
+		dm.headerGen++
+		if err := dm.writePageLocked(id, p); err != nil {
+			return err
+		}
+		dm.headerDirty = false
+		return nil
+	}
+
 	if uint32(id) >= dm.pageCount {
 		return fmt.Errorf("page %d out of range (have %d pages)", id, dm.pageCount)
 	}
-
-	offset := int64(id) * storage.PageSize
-	n, err := dm.file.WriteAt(p[:], offset)
-	if err != nil {
-		return fmt.Errorf("write page %d: %w", id, err)
-	}
-	if n != storage.PageSize {
-		return fmt.Errorf("write page %d: short write (%d bytes)", id, n)
-	}
-	return nil
+	return dm.writePageLocked(id, p)
 }
 
 // AllocatePage returns a fresh page ID. It first tries the free list; if empty,
@@ -176,7 +270,7 @@ func (dm *Manager) AllocatePage() (storage.PageID, *storage.Page, error) {
 		if err := dm.writePageLocked(id, p); err != nil {
 			return 0, nil, fmt.Errorf("zero freed page: %w", err)
 		}
-		dm.headerDirty = true
+		dm.touchHeaderLocked()
 		return id, p, nil
 	}
 
@@ -188,7 +282,7 @@ func (dm *Manager) AllocatePage() (storage.PageID, *storage.Page, error) {
 		dm.pageCount--
 		return 0, nil, fmt.Errorf("extend file: %w", err)
 	}
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return id, p, nil
 }
 
@@ -212,7 +306,7 @@ func (dm *Manager) FreePage(id storage.PageID) error {
 	}
 
 	dm.freeHead = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 
@@ -223,7 +317,7 @@ func (dm *Manager) NextNodeID() (uint64, error) {
 
 	id := dm.nextNodeID
 	dm.nextNodeID++
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return id, nil
 }
 
@@ -234,7 +328,7 @@ func (dm *Manager) NextEdgeID() (uint64, error) {
 
 	id := dm.nextEdgeID
 	dm.nextEdgeID++
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return id, nil
 }
 
@@ -262,18 +356,8 @@ func (dm *Manager) PageCount() uint32 {
 func (dm *Manager) RefreshHeaderFromPage(p *storage.Page) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	dm.pageCount = binary.LittleEndian.Uint32(p[headerPageCountOffset:])
-	dm.freeHead = storage.PageID(binary.LittleEndian.Uint32(p[headerFreeHeadOffset:]))
-	dm.nextNodeID = binary.LittleEndian.Uint64(p[headerNextNodeIDOffset:])
-	dm.nextEdgeID = binary.LittleEndian.Uint64(p[headerNextEdgeIDOffset:])
-	dm.nodeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerNodeIndexRoot:]))
-	dm.edgeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgeIndexRoot:]))
-	dm.outIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerOutIndexRoot:]))
-	dm.inIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerInIndexRoot:]))
-	dm.nodePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageHead:]))
-	dm.nodePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageTail:]))
-	dm.edgePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageHead:]))
-	dm.edgePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageTail:]))
+	dm.applyHeaderLocked(p)
+	dm.touchHeaderLocked()
 }
 
 // --- Index root persistence ---
@@ -303,28 +387,28 @@ func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.nodeIndexRoot = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.edgeIndexRoot = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetOutIndexRoot(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.outIndexRoot = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetInIndexRoot(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.inIndexRoot = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 
@@ -355,28 +439,28 @@ func (dm *Manager) SetNodePageHead(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.nodePageHead = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetNodePageTail(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.nodePageTail = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetEdgePageHead(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.edgePageHead = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 func (dm *Manager) SetEdgePageTail(id storage.PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.edgePageTail = id
-	dm.headerDirty = true
+	dm.touchHeaderLocked()
 	return nil
 }
 
@@ -427,7 +511,19 @@ func (dm *Manager) loadHeader() error {
 	return nil
 }
 
-func (dm *Manager) flushHeader() error {
+func (dm *Manager) touchHeaderLocked() {
+	dm.headerDirty = true
+	dm.headerGen++
+}
+
+func (dm *Manager) invokeBeforeWrite() error {
+	if dm.beforeWrite == nil {
+		return nil
+	}
+	return dm.beforeWrite()
+}
+
+func (dm *Manager) headerPageLocked() storage.Page {
 	var p storage.Page
 	binary.LittleEndian.PutUint32(p[headerMagicOffset:], storage.MagicNumber)
 	binary.LittleEndian.PutUint32(p[headerVersionOffset:], storage.FormatVersion)
@@ -435,25 +531,42 @@ func (dm *Manager) flushHeader() error {
 	binary.LittleEndian.PutUint32(p[headerFreeHeadOffset:], uint32(dm.freeHead))
 	binary.LittleEndian.PutUint64(p[headerNextNodeIDOffset:], dm.nextNodeID)
 	binary.LittleEndian.PutUint64(p[headerNextEdgeIDOffset:], dm.nextEdgeID)
-
 	binary.LittleEndian.PutUint32(p[headerNodeIndexRoot:], uint32(dm.nodeIndexRoot))
 	binary.LittleEndian.PutUint32(p[headerEdgeIndexRoot:], uint32(dm.edgeIndexRoot))
 	binary.LittleEndian.PutUint32(p[headerOutIndexRoot:], uint32(dm.outIndexRoot))
 	binary.LittleEndian.PutUint32(p[headerInIndexRoot:], uint32(dm.inIndexRoot))
-
 	binary.LittleEndian.PutUint32(p[headerNodePageHead:], uint32(dm.nodePageHead))
 	binary.LittleEndian.PutUint32(p[headerNodePageTail:], uint32(dm.nodePageTail))
 	binary.LittleEndian.PutUint32(p[headerEdgePageHead:], uint32(dm.edgePageHead))
 	binary.LittleEndian.PutUint32(p[headerEdgePageTail:], uint32(dm.edgePageTail))
+	return p
+}
 
-	n, err := dm.file.WriteAt(p[:], 0)
-	if err != nil {
+func (dm *Manager) applyHeaderLocked(p *storage.Page) {
+	dm.pageCount = binary.LittleEndian.Uint32(p[headerPageCountOffset:])
+	dm.freeHead = storage.PageID(binary.LittleEndian.Uint32(p[headerFreeHeadOffset:]))
+	dm.nextNodeID = binary.LittleEndian.Uint64(p[headerNextNodeIDOffset:])
+	dm.nextEdgeID = binary.LittleEndian.Uint64(p[headerNextEdgeIDOffset:])
+	dm.nodeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerNodeIndexRoot:]))
+	dm.edgeIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgeIndexRoot:]))
+	dm.outIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerOutIndexRoot:]))
+	dm.inIndexRoot = storage.PageID(binary.LittleEndian.Uint32(p[headerInIndexRoot:]))
+	dm.nodePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageHead:]))
+	dm.nodePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerNodePageTail:]))
+	dm.edgePageHead = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageHead:]))
+	dm.edgePageTail = storage.PageID(binary.LittleEndian.Uint32(p[headerEdgePageTail:]))
+}
+
+func (dm *Manager) flushHeader() error {
+	if err := dm.invokeBeforeWrite(); err != nil {
+		return err
+	}
+	p := dm.headerPageLocked()
+	if err := dm.writeAtLocked(0, &p); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
-	if n != storage.PageSize {
-		return fmt.Errorf("header short write (%d bytes)", n)
-	}
 	dm.headerDirty = false
+	dm.headerGen++
 	return nil
 }
 
@@ -471,7 +584,16 @@ func (dm *Manager) readPageLocked(id storage.PageID) (*storage.Page, error) {
 }
 
 func (dm *Manager) writePageLocked(id storage.PageID, p *storage.Page) error {
-	offset := int64(id) * storage.PageSize
+	if err := dm.invokeBeforeWrite(); err != nil {
+		return err
+	}
+	if err := dm.writeAtLocked(int64(id)*storage.PageSize, p); err != nil {
+		return fmt.Errorf("write page %d: %w", id, err)
+	}
+	return nil
+}
+
+func (dm *Manager) writeAtLocked(offset int64, p *storage.Page) error {
 	n, err := dm.file.WriteAt(p[:], offset)
 	if err != nil {
 		return err

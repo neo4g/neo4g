@@ -34,22 +34,32 @@ const (
 // modification, allowing the WAL to capture index changes for replication.
 type PageLogger func(pageID storage.PageID, before, after *storage.Page) error
 
+// RootUpdater persists a new root page ID after the root splits.
+type RootUpdater func(newRoot storage.PageID) error
+
 // BTree is a disk-resident B+Tree index.
 type BTree struct {
-	pool    *pool.Pool
-	disk    *disk.Manager
-	rootID  storage.PageID
-	pageLog PageLogger
+	pool          *pool.Pool
+	disk          *disk.Manager
+	rootID        storage.PageID
+	committedRoot storage.PageID
+	pageLog       PageLogger
+	onRoot        RootUpdater
 }
 
 // SetPageLogger installs a callback invoked on every page write.
 // Set to nil to disable. Not concurrency-safe — caller must synchronize.
 func (bt *BTree) SetPageLogger(l PageLogger) { bt.pageLog = l }
 
+// SetRootUpdater installs a callback invoked with the new root page ID when
+// the root splits. The in-memory root changes only after the callback returns nil.
+func (bt *BTree) SetRootUpdater(fn RootUpdater) { bt.onRoot = fn }
+
 func (bt *BTree) logAndUnpin(pageID storage.PageID, before *storage.Page, page *storage.Page) error {
 	if bt.pageLog != nil {
 		if err := bt.pageLog(pageID, before, page); err != nil {
-			bt.pool.UnpinPage(pageID, true)
+			*page = *before
+			bt.pool.UnpinPage(pageID, false)
 			return err
 		}
 	}
@@ -66,12 +76,12 @@ func NewBTree(p *pool.Pool, dm *disk.Manager) (*BTree, error) {
 	initBTreeLeaf(rootPage, rootID)
 	p.UnpinPage(rootID, true)
 
-	return &BTree{pool: p, disk: dm, rootID: rootID}, nil
+	return &BTree{pool: p, disk: dm, rootID: rootID, committedRoot: rootID}, nil
 }
 
 // LoadBTree loads an existing B+Tree given its root page ID.
 func LoadBTree(p *pool.Pool, dm *disk.Manager, rootID storage.PageID) *BTree {
-	return &BTree{pool: p, disk: dm, rootID: rootID}
+	return &BTree{pool: p, disk: dm, rootID: rootID, committedRoot: rootID}
 }
 
 // RootPageID returns the page ID of the B+Tree root.
@@ -79,11 +89,18 @@ func (bt *BTree) RootPageID() storage.PageID {
 	return bt.rootID
 }
 
-// SetRootPageID updates the cached root page ID.
+// SetRootPageID updates the cached root page ID and treats it as committed.
 // Used by the replicator to keep indexes in sync after WAL replay.
 func (bt *BTree) SetRootPageID(id storage.PageID) {
 	bt.rootID = id
+	bt.committedRoot = id
 }
+
+// RevertRoot restores the root page ID from the last committed value.
+func (bt *BTree) RevertRoot() { bt.rootID = bt.committedRoot }
+
+// NoteCommittedRoot records the current root as committed.
+func (bt *BTree) NoteCommittedRoot() { bt.committedRoot = bt.rootID }
 
 // Search finds the RID associated with the given key.
 func (bt *BTree) Search(key uint64) (storage.RID, bool) {
@@ -134,6 +151,11 @@ func (bt *BTree) Insert(key uint64, rid storage.RID) error {
 
 		if err := bt.logAndUnpin(newRootID, &before, newRoot); err != nil {
 			return err
+		}
+		if bt.onRoot != nil {
+			if err := bt.onRoot(newRootID); err != nil {
+				return err
+			}
 		}
 		bt.rootID = newRootID
 	}
@@ -231,17 +253,34 @@ func (bt *BTree) readInternalKey(page *storage.Page, i int) uint64 {
 
 func (bt *BTree) searchLeaf(page *storage.Page, key uint64) (storage.RID, bool) {
 	keyCount := int(binary.LittleEndian.Uint16(page[btreeOffKeyCount:]))
+	idx, ok := bt.leafSearch(page, keyCount, key)
+	if !ok {
+		return storage.InvalidRID, false
+	}
+	_, rid := bt.readLeafEntry(page, idx)
+	return rid, true
+}
 
-	for i := range keyCount {
-		k, rid := bt.readLeafEntry(page, i)
-		if k == key {
-			return rid, true
-		}
-		if k > key {
-			break
+// leafSearch binary-searches a leaf for key. It returns the matching index,
+// or the insertion point and false when the key is absent.
+func (bt *BTree) leafSearch(page *storage.Page, keyCount int, key uint64) (int, bool) {
+	lo, hi := 0, keyCount
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		k, _ := bt.readLeafEntry(page, mid)
+		if k < key {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
 	}
-	return storage.InvalidRID, false
+	if lo < keyCount {
+		k, _ := bt.readLeafEntry(page, lo)
+		if k == key {
+			return lo, true
+		}
+	}
+	return lo, false
 }
 
 func (bt *BTree) readLeafEntry(page *storage.Page, i int) (uint64, storage.RID) {
@@ -294,22 +333,15 @@ func (bt *BTree) insertRecursive(pageID storage.PageID, key uint64, rid storage.
 
 func (bt *BTree) insertIntoLeaf(pageID storage.PageID, page *storage.Page, key uint64, rid storage.RID) (uint64, storage.PageID, error) {
 	keyCount := int(binary.LittleEndian.Uint16(page[btreeOffKeyCount:]))
+	pos, exact := bt.leafSearch(page, keyCount, key)
 	before := *page
 
-	pos := keyCount
-	for i := range keyCount {
-		k, _ := bt.readLeafEntry(page, i)
-		if k == key {
-			bt.writeLeafEntry(page, i, key, rid)
-			if err := bt.logAndUnpin(pageID, &before, page); err != nil {
-				return 0, storage.InvalidPageID, err
-			}
-			return 0, storage.InvalidPageID, nil
+	if exact {
+		bt.writeLeafEntry(page, pos, key, rid)
+		if err := bt.logAndUnpin(pageID, &before, page); err != nil {
+			return 0, storage.InvalidPageID, err
 		}
-		if k > key {
-			pos = i
-			break
-		}
+		return 0, storage.InvalidPageID, nil
 	}
 
 	if keyCount < btreeMaxLeafKeys {
@@ -377,7 +409,8 @@ func (bt *BTree) splitLeaf(pageID storage.PageID, page *storage.Page, pos int, k
 	binary.LittleEndian.PutUint32(newPage[btreeOffNextLeaf:], uint32(oldNext))
 
 	if err := bt.logAndUnpin(pageID, &beforeOld, page); err != nil {
-		bt.pool.UnpinPage(newID, true)
+		*newPage = beforeNew
+		bt.pool.UnpinPage(newID, false)
 		return 0, storage.InvalidPageID, err
 	}
 	if err := bt.logAndUnpin(newID, &beforeNew, newPage); err != nil {
@@ -485,7 +518,8 @@ func (bt *BTree) splitInternal(pageID storage.PageID, page *storage.Page, pos in
 	}
 
 	if err := bt.logAndUnpin(pageID, &beforeOld, page); err != nil {
-		bt.pool.UnpinPage(newID, true)
+		*newPage = beforeNew
+		bt.pool.UnpinPage(newID, false)
 		return 0, storage.InvalidPageID, err
 	}
 	if err := bt.logAndUnpin(newID, &beforeNew, newPage); err != nil {
@@ -507,24 +541,21 @@ func (bt *BTree) deleteFromLeaf(pageID storage.PageID, key uint64) bool {
 
 	if pageType == storage.PageTypeBTreeLf {
 		keyCount := int(binary.LittleEndian.Uint16(page[btreeOffKeyCount:]))
-		for i := range keyCount {
-			k, _ := bt.readLeafEntry(page, i)
-			if k == key {
-				before := *page
-				for j := i; j < keyCount-1; j++ {
-					nk, nr := bt.readLeafEntry(page, j+1)
-					bt.writeLeafEntry(page, j, nk, nr)
-				}
-				binary.LittleEndian.PutUint16(page[btreeOffKeyCount:], uint16(keyCount-1))
-				bt.logAndUnpin(pageID, &before, page)
-				return true
-			}
-			if k > key {
-				break
-			}
+		idx, ok := bt.leafSearch(page, keyCount, key)
+		if !ok {
+			bt.pool.UnpinPage(pageID, false)
+			return false
 		}
-		bt.pool.UnpinPage(pageID, false)
-		return false
+		before := *page
+		for j := idx; j < keyCount-1; j++ {
+			nk, nr := bt.readLeafEntry(page, j+1)
+			bt.writeLeafEntry(page, j, nk, nr)
+		}
+		binary.LittleEndian.PutUint16(page[btreeOffKeyCount:], uint16(keyCount-1))
+		if err := bt.logAndUnpin(pageID, &before, page); err != nil {
+			return false
+		}
+		return true
 	}
 
 	childID := bt.findChild(page, key)

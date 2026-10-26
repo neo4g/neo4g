@@ -109,15 +109,39 @@ func (rm *Manager) beginTx() storage.TxID {
 
 func (rm *Manager) commitOrAbort(txID storage.TxID, errp *error) {
 	if rm.txm == nil {
+		if *errp == nil && rm.idx != nil {
+			rm.idx.NoteCommittedRoots()
+		}
 		return
 	}
 	if *errp != nil {
-		rm.txm.Abort(txID)
-	} else {
-		if cerr := rm.txm.Commit(txID); cerr != nil {
-			*errp = cerr
+		_ = rm.txm.Abort(txID)
+		if rm.idx != nil {
+			rm.idx.RevertRoots(rm.disk)
+		}
+		rm.reloadChains()
+		return
+	}
+	if cerr := rm.txm.Commit(txID); cerr != nil {
+		*errp = cerr
+		if abortErr := rm.txm.Abort(txID); abortErr == nil {
+			if rm.idx != nil {
+				rm.idx.RevertRoots(rm.disk)
+			}
+			rm.reloadChains()
+			return
 		}
 	}
+	if rm.idx != nil {
+		rm.idx.NoteCommittedRoots()
+	}
+}
+
+func (rm *Manager) reloadChains() {
+	rm.nodePageHead = rm.disk.NodePageHead()
+	rm.nodePageTail = rm.disk.NodePageTail()
+	rm.edgePageHead = rm.disk.EdgePageHead()
+	rm.edgePageTail = rm.disk.EdgePageTail()
 }
 
 func (rm *Manager) logPageWrite(txID storage.TxID, pageID storage.PageID, before, after *storage.Page) error {
@@ -125,6 +149,17 @@ func (rm *Manager) logPageWrite(txID storage.TxID, pageID storage.PageID, before
 		return nil
 	}
 	return rm.txm.WritePage(txID, pageID, before, after)
+}
+
+// logDirty logs a page mutation. If logging fails, the frame is restored to
+// before and unpinned so a later flush cannot write the after-image.
+func (rm *Manager) logDirty(txID storage.TxID, pageID storage.PageID, before, after *storage.Page) error {
+	if err := rm.logPageWrite(txID, pageID, before, after); err != nil {
+		*after = *before
+		rm.pool.UnpinPage(pageID, false)
+		return err
+	}
+	return rm.pool.UnpinPage(pageID, true)
 }
 
 func (rm *Manager) enableIndexLogging(txID storage.TxID) {
@@ -232,20 +267,16 @@ func (rm *Manager) UpdateNode(id graph.NodeID, props map[string]graph.Value) (er
 	sp := page.New(p)
 	err = sp.UpdateRecord(rid.Slot, newData)
 	if err == nil {
-		if logErr := rm.logPageWrite(txID, rid.PageID, &before, p); logErr != nil {
-			rm.pool.UnpinPage(rid.PageID, false)
+		if logErr := rm.logDirty(txID, rid.PageID, &before, p); logErr != nil {
 			return fmt.Errorf("log update page: %w", logErr)
 		}
-		rm.pool.UnpinPage(rid.PageID, true)
 		return nil
 	}
 
 	sp.DeleteRecord(rid.Slot)
-	if logErr := rm.logPageWrite(txID, rid.PageID, &before, p); logErr != nil {
-		rm.pool.UnpinPage(rid.PageID, false)
+	if logErr := rm.logDirty(txID, rid.PageID, &before, p); logErr != nil {
 		return fmt.Errorf("log delete page: %w", logErr)
 	}
-	rm.pool.UnpinPage(rid.PageID, true)
 
 	newRID, err := rm.insertRecord(txID, newData, rm.nodePageTail, storage.PageTypeNode, &rm.nodePageTail)
 	if err != nil {
@@ -575,11 +606,9 @@ func (rm *Manager) insertRecord(txID storage.TxID, data []byte, tailPageID stora
 	sp := page.New(p)
 	slot, err := sp.InsertRecord(data)
 	if err == nil {
-		if logErr := rm.logPageWrite(txID, tailPageID, &before, p); logErr != nil {
-			rm.pool.UnpinPage(tailPageID, false)
+		if logErr := rm.logDirty(txID, tailPageID, &before, p); logErr != nil {
 			return storage.InvalidRID, logErr
 		}
-		rm.pool.UnpinPage(tailPageID, true)
 		return storage.RID{PageID: tailPageID, Slot: slot}, nil
 	}
 
@@ -605,24 +634,22 @@ func (rm *Manager) insertRecord(txID storage.TxID, data []byte, tailPageID stora
 
 	oldSP := page.New(oldPage)
 	oldSP.SetNextPage(newPageID)
-	if logErr := rm.logPageWrite(txID, tailPageID, &oldBefore, oldPage); logErr != nil {
-		rm.pool.UnpinPage(tailPageID, false)
+	if logErr := rm.logDirty(txID, tailPageID, &oldBefore, oldPage); logErr != nil {
+		*newPage = newBefore
 		rm.pool.UnpinPage(newPageID, false)
 		return storage.InvalidRID, logErr
 	}
-	rm.pool.UnpinPage(tailPageID, true)
 
 	slot, err = newSP.InsertRecord(data)
 	if err != nil {
+		*newPage = newBefore
 		rm.pool.UnpinPage(newPageID, false)
 		return storage.InvalidRID, fmt.Errorf("insert into new page: %w", err)
 	}
 
-	if logErr := rm.logPageWrite(txID, newPageID, &newBefore, newPage); logErr != nil {
-		rm.pool.UnpinPage(newPageID, false)
+	if logErr := rm.logDirty(txID, newPageID, &newBefore, newPage); logErr != nil {
 		return storage.InvalidRID, logErr
 	}
-	rm.pool.UnpinPage(newPageID, true)
 	*tail = newPageID
 	rm.persistPageChain()
 	return storage.RID{PageID: newPageID, Slot: slot}, nil
@@ -654,10 +681,8 @@ func (rm *Manager) deleteRecord(txID storage.TxID, rid storage.RID) error {
 		return err
 	}
 
-	if logErr := rm.logPageWrite(txID, rid.PageID, &before, p); logErr != nil {
-		rm.pool.UnpinPage(rid.PageID, false)
+	if logErr := rm.logDirty(txID, rid.PageID, &before, p); logErr != nil {
 		return logErr
 	}
-	rm.pool.UnpinPage(rid.PageID, true)
 	return nil
 }

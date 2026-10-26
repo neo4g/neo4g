@@ -1,6 +1,7 @@
 package txn
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -122,8 +123,17 @@ func TestTxCheckpoint(t *testing.T) {
 	}
 
 	records, _ := w.ReadAll()
-	if len(records) != 0 {
-		t.Errorf("expected 0 WAL records after checkpoint, got %d", len(records))
+	if len(records) == 0 {
+		t.Fatal("checkpoint must keep WAL history")
+	}
+	var sawCP bool
+	for _, rec := range records {
+		if rec.Type == wal.RecordCheckpoint {
+			sawCP = true
+		}
+	}
+	if !sawCP {
+		t.Fatal("expected a checkpoint record")
 	}
 }
 
@@ -285,5 +295,346 @@ func TestRecoveryCleanShutdown(t *testing.T) {
 	}
 	if redone != 0 || undone != 0 {
 		t.Errorf("expected 0/0 for clean shutdown, got %d/%d", redone, undone)
+	}
+}
+
+func TestCheckpointRejectsActiveTx(t *testing.T) {
+	tm, _, _, _ := newTestTxEnv(t)
+	tx := tm.Begin()
+	if err := tm.Checkpoint(); err == nil {
+		t.Fatal("expected checkpoint to fail while a transaction is active")
+	}
+	if err := tm.Commit(tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckpointLSNMonotonicAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	dm, err := disk.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	walPath := filepath.Join(dir, "test.wal")
+	w, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bp := pool.New(dm, 8)
+	tm := NewManager(w, bp, dm)
+
+	pageID, _, _ := dm.AllocatePage()
+	tx := tm.Begin()
+	var before, after storage.Page
+	copy(after[:], "kept")
+	if err := tm.WritePage(tx, pageID, &before, &after); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Commit(tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	want := w.NextLSN()
+	if want <= 1 {
+		t.Fatalf("expected LSN to advance, got %d", want)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dm.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w2, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+	if w2.NextLSN() != want {
+		t.Fatalf("reopen next LSN = %d, want %d", w2.NextLSN(), want)
+	}
+}
+
+func TestWALForcedBeforeDataWrite(t *testing.T) {
+	tm, w, bp, _ := newTestTxEnv(t)
+	id, page, err := bp.NewPage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *page
+	copy(page[:], "logged-before-flush")
+	tx := tm.Begin()
+	if err := tm.WritePage(tx, id, &before, page); err != nil {
+		t.Fatal(err)
+	}
+	if w.Durable() {
+		t.Fatal("LogUpdate must stay buffered until a data write")
+	}
+	if err := bp.UnpinPage(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := bp.FlushPage(id); err != nil {
+		t.Fatal(err)
+	}
+	if !w.Durable() {
+		t.Fatal("flushing a data page must force the WAL")
+	}
+	if err := tm.Commit(tx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNoSyncSkipsWALForce(t *testing.T) {
+	tm, w, _, dm := newTestTxEnv(t)
+	tm.NoSync = true
+	tx := tm.Begin()
+	if err := dm.SetNodeIndexRoot(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Commit(tx); err != nil {
+		t.Fatal(err)
+	}
+	if w.Durable() {
+		t.Fatal("NoSync commit must not force the WAL")
+	}
+}
+
+func TestAbortRestoresPoolAndHeader(t *testing.T) {
+	tm, _, bp, dm := newTestTxEnv(t)
+	id, page, err := bp.NewPage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(page[:], "original")
+	if err := bp.UnpinPage(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := bp.FlushPage(id); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err = bp.FetchPage(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := *page
+	copy(page[:], "modified")
+	tx := tm.Begin()
+	if err := dm.SetNodeIndexRoot(99); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.WritePage(tx, id, &before, page); err != nil {
+		t.Fatal(err)
+	}
+	if err := bp.UnpinPage(id, true); err != nil {
+		t.Fatal(err)
+	}
+	modified := *page
+	if err := dm.WritePage(id, &modified); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tm.Abort(tx); err != nil {
+		t.Fatal(err)
+	}
+	if dm.NodeIndexRoot() != 0 {
+		t.Fatalf("header root = %d, want 0 after abort", dm.NodeIndexRoot())
+	}
+	got, err := bp.FetchPage(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bp.UnpinPage(id, false)
+	if string(got[:8]) != "original" {
+		t.Fatalf("pool page = %q, want original", got[:8])
+	}
+	if err := bp.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	diskPage, err := dm.ReadPage(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(diskPage[:8]) != "original" {
+		t.Fatalf("disk page = %q after flush, want original", diskPage[:8])
+	}
+}
+
+func TestHeaderRedoAndExtendFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	walPath := filepath.Join(dir, "test.wal")
+
+	dm, err := disk.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bp := pool.New(dm, 8)
+	tm := NewManager(w, bp, dm)
+
+	tx := tm.Begin()
+	if err := dm.SetNodeIndexRoot(42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dm.NextNodeID(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Commit(tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dm.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.OpenFile(dbPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zero [4]byte
+	if _, err := f.WriteAt(zero[:], 32); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	dm2, err := disk.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm2.Close()
+	if dm2.NodeIndexRoot() != 0 {
+		t.Fatalf("clobber failed, root = %d", dm2.NodeIndexRoot())
+	}
+	w2, err := wal.Open(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+	if _, _, err := Recover(w2, dm2); err != nil {
+		t.Fatal(err)
+	}
+	if dm2.NodeIndexRoot() != 42 {
+		t.Fatalf("recovered root = %d, want 42", dm2.NodeIndexRoot())
+	}
+	if dm2.PageCount() < 1 {
+		t.Fatal("page count missing")
+	}
+
+	// A committed record for a page past the catalog must extend the file.
+	extDir := t.TempDir()
+	extDB := filepath.Join(extDir, "ext.db")
+	extWAL := filepath.Join(extDir, "ext.wal")
+	dm3, err := disk.Open(extDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w3, err := wal.Open(extWAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after storage.Page
+	copy(after[:], "extended")
+	if _, err := w3.LogUpdate(1, 5, &before, &after); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w3.LogCommit(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := w3.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	w3.Close()
+	dm3.Close()
+
+	dm4, err := disk.Open(extDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dm4.Close()
+	w4, err := wal.Open(extWAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w4.Close()
+	if _, _, err := Recover(w4, dm4); err != nil {
+		t.Fatal(err)
+	}
+	page, err := dm4.ReadPage(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(page[:8]) != "extended" {
+		t.Fatalf("page 5 = %q", page[:8])
+	}
+}
+
+func TestTornWALTailTruncated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.wal")
+	w, err := wal.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.LogCommit(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.LogCommit(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{0xff}, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{1, 2, 3}, info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	w2, err := wal.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+	records, err := w2.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].TxID != 1 {
+		t.Fatalf("torn tail kept bad records: %+v", records)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != info.Size()/2 {
+		t.Fatalf("file size = %d, want %d", st.Size(), info.Size()/2)
+	}
+	if w2.NextLSN() != 2 {
+		t.Fatalf("next LSN = %d, want 2", w2.NextLSN())
 	}
 }
