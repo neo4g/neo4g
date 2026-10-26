@@ -67,7 +67,7 @@ func DecodeNode(data []byte) (*graph.Node, error) {
 	}
 
 	var err error
-	n.Properties, off, err = decodeProperties(data, off)
+	n.Properties, err = decodeProperties(data, off)
 	if err != nil {
 		return nil, fmt.Errorf("node properties: %w", err)
 	}
@@ -131,7 +131,7 @@ func DecodeEdge(data []byte) (*graph.Edge, error) {
 	off += 8
 
 	var err error
-	e.Properties, off, err = decodeProperties(data, off)
+	e.Properties, err = decodeProperties(data, off)
 	if err != nil {
 		return nil, fmt.Errorf("edge properties: %w", err)
 	}
@@ -162,9 +162,9 @@ func encodeProperties(buf []byte, off int, props map[string]graph.Value) int {
 	return off
 }
 
-func decodeProperties(data []byte, off int) (map[string]graph.Value, int, error) {
+func decodeProperties(data []byte, off int) (map[string]graph.Value, error) {
 	if off+2 > len(data) {
-		return nil, off, fmt.Errorf("truncated property count")
+		return nil, fmt.Errorf("truncated property count")
 	}
 
 	count := int(binary.LittleEndian.Uint16(data[off:]))
@@ -173,29 +173,29 @@ func decodeProperties(data []byte, off int) (map[string]graph.Value, int, error)
 	props := make(map[string]graph.Value, count)
 	for i := range count {
 		if off+2 > len(data) {
-			return nil, off, fmt.Errorf("truncated property %d key length", i)
+			return nil, fmt.Errorf("truncated property %d key length", i)
 		}
 		kLen := int(binary.LittleEndian.Uint16(data[off:]))
 		off += 2
 		if off+kLen > len(data) {
-			return nil, off, fmt.Errorf("truncated property %d key", i)
+			return nil, fmt.Errorf("truncated property %d key", i)
 		}
 		key := string(data[off : off+kLen])
 		off += kLen
 
 		if off+1 > len(data) {
-			return nil, off, fmt.Errorf("truncated property %d value type", i)
+			return nil, fmt.Errorf("truncated property %d value type", i)
 		}
 		vType := graph.ValueType(data[off])
 		off++
 
 		if off+2 > len(data) {
-			return nil, off, fmt.Errorf("truncated property %d data length", i)
+			return nil, fmt.Errorf("truncated property %d data length", i)
 		}
 		dLen := int(binary.LittleEndian.Uint16(data[off:]))
 		off += 2
 		if off+dLen > len(data) {
-			return nil, off, fmt.Errorf("truncated property %d data", i)
+			return nil, fmt.Errorf("truncated property %d data", i)
 		}
 		vData := make([]byte, dLen)
 		copy(vData, data[off:off+dLen])
@@ -204,5 +204,5 @@ func decodeProperties(data []byte, off int) (map[string]graph.Value, int, error)
 		props[key] = graph.Value{Type: vType, Data: vData}
 	}
 
-	return props, off, nil
+	return props, nil
 }

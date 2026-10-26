@@ -1,0 +1,51 @@
+version: "2"
+run:
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - dupl
+    - gocyclo
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+        - name: import-shadowing
+    # Operator also enables errcheck, goconst, and modernize. Those still
+    # report existing call sites and style nits, so they stay off until that
+    # cleanup is intentional.
+    lll:
+      line-length: 160
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go
+        linters:
+          - unparam
+          - lll
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
