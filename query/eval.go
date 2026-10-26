@@ -182,7 +182,7 @@ func compare(op parser.TokenType, left, right interface{}) (interface{}, error) 
 		case parser.EQ:
 			return left == nil && right == nil, nil
 		case parser.NEQ:
-			return !(left == nil && right == nil), nil
+			return left != nil || right != nil, nil
 		default:
 			return nil, nil
 		}

@@ -171,7 +171,6 @@ func (ex *Executor) resolveMatch(mc *parser.MatchClause, params map[string]inter
 	var mu sync.Mutex
 
 	for i, pat := range mc.Patterns {
-		i, pat := i, pat
 		g.Go(func() error {
 			rows, err := ex.resolvePatternWithFilters(pat, pushdown)
 			if err != nil {

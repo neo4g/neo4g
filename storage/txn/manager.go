@@ -16,7 +16,7 @@ import (
 type TxState int
 
 const (
-	TxStateActive    TxState = iota
+	TxStateActive TxState = iota
 	TxStateCommitted
 	TxStateAborted
 )
