@@ -1,6 +1,6 @@
 # Neo4g — Project Status
 
-> **Last updated:** 2026-03-19
+> **Last updated:** 2026-10-26
 
 ## Component Status
 
@@ -27,7 +27,8 @@
 | **Query executor** | `query/` | `done` | Expression evaluator, parallel MATCH resolution (errgroup), WHERE filtering, CREATE/RETURN/SET/DELETE dispatch |
 | **Query planner** | — | `not-started` | Logical → physical plan (future) |
 | **Server engine** | `server/` | `done` | Engine with env-var config, lifecycle (open/close/recovery), exposes Store + Scanner |
-| **HTTP API** | `server/` | `done` | Single `POST /api/query` endpoint wired to parser + executor, graceful shutdown |
+| **HTTP API** | `server/` | `done` | Client `POST /api/query` and `GET /api/health`; graceful shutdown |
+| **Internal gRPC** | `rpcpb/` + `server/` + `gateway/` | `done` | Gateway and replica traffic: Health, SetRole, ExecuteQuery, PullWAL, Checksum |
 | **Concurrent reads** | `storage/record/` | `done` | RWMutex upgrade — readers run in parallel, writers serialize |
 
 ## Status Legend
@@ -50,3 +51,4 @@
 - 2026-03-19: Cypher-lite query parser — hand-written lexer, recursive-descent parser, full AST (CREATE/MATCH/WHERE/RETURN/SET/DELETE, node/edge patterns, expressions) (`query/`)
 - 2026-03-19: Package rename — `query/` → `parser/` for lexer/AST/parser; new `query/` for executor engine
 - 2026-03-19: Query executor engine — expression evaluator, parallel MATCH via errgroup, WHERE filtering, action dispatch (CREATE/RETURN/SET/DELETE), wired into HTTP handler (`query/`, `server/handler.go`, `server/http.go`)
+- 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP

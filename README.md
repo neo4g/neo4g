@@ -38,10 +38,22 @@ Stop with `Ctrl-C` — the server drains connections, checkpoints the WAL, and f
 | `NEO4G_WAL_ENABLED` | `true` | Enable write-ahead log for crash recovery |
 | `NEO4G_WAL_FILE` | `neo4g.wal` | WAL file name (relative to data dir) |
 | `NEO4G_POOL_SIZE` | `1024` | Buffer pool frame count |
-| `NEO4G_LISTEN_ADDR` | `:7474` | HTTP listen address |
+| `NEO4G_LISTEN_ADDR` | `:7474` | HTTP listen address (client API) |
+| `NEO4G_GRPC_ADDR` | `:9474` | Internal gRPC listen address |
 | `NEO4G_READ_TIMEOUT` | `30s` | Max duration for reading a request |
 | `NEO4G_WRITE_TIMEOUT` | `30s` | Max duration for writing a response |
 | `NEO4G_SHUTDOWN_TIMEOUT` | `10s` | Max duration for graceful shutdown |
+
+Clients talk to a node, or to the gateway, over HTTP. Nodes talk to each other, and the gateway talks to nodes, over gRPC (`NEO4G_GRPC_ADDR`, default `:9474`).
+
+Replica `NEO4G_PRIMARY_ADDR` and gateway `NEO4G_GW_NODES` are gRPC addresses (`host:port`, no scheme). Example:
+
+```bash
+NEO4G_GW_NODES=node1=127.0.0.1:9474,node2=127.0.0.1:9475
+NEO4G_PRIMARY_ADDR=127.0.0.1:9474
+```
+
+The internal service is `neo4g.internal.v1.Node` (`proto/node.proto`): `Health`, `SetRole`, `ExecuteQuery`, `PullWAL`, and `Checksum`.
 
 ## API
 

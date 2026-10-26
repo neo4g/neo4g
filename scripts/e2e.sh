@@ -99,7 +99,7 @@ echo "Binary: $BINARY"
 # ── Start server ─────────────────────────────────────────────────────
 SERVER_LOG="$TMPDIR_E2E/server.log"
 echo "Starting server..."
-NEO4G_DATA_DIR="$DATA_DIR" NEO4G_LISTEN_ADDR="127.0.0.1:0" "$BINARY" > "$SERVER_LOG" 2>&1 &
+NEO4G_DATA_DIR="$DATA_DIR" NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_GRPC_ADDR="127.0.0.1:0" "$BINARY" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 # Wait for server to log its listening address

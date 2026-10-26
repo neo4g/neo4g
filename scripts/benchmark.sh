@@ -92,7 +92,7 @@ go build -o "$BINARY" ./cmd/neo4g
 
 # ── Start server ─────────────────────────────────────────────────────
 echo "Starting server..."
-NEO4G_DATA_DIR="$DATA_DIR" NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_WAL_NOSYNC="$WAL_NOSYNC" "$BINARY" > "$SERVER_LOG" 2>&1 &
+NEO4G_DATA_DIR="$DATA_DIR" NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_GRPC_ADDR="127.0.0.1:0" NEO4G_WAL_NOSYNC="$WAL_NOSYNC" "$BINARY" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 ACTUAL_PORT=""

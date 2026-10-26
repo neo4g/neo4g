@@ -14,14 +14,15 @@ func main() {
 	cfg := gateway.ConfigFromEnv()
 
 	if len(cfg.Nodes) == 0 {
-		log.Fatal("neo4g-gateway: NEO4G_GW_NODES is required (e.g. node1=http://localhost:7474,node2=http://localhost:7475)")
+		log.Fatal("neo4g-gateway: NEO4G_GW_NODES is required (e.g. node1=127.0.0.1:9474,node2=127.0.0.1:9475)")
 	}
 
 	cluster := gateway.NewCluster(cfg.Nodes)
-	election := gateway.NewElection(cfg, cluster)
-	gw := gateway.New(cfg, cluster)
+	dialer := gateway.NewDialer()
+	election := gateway.NewElection(cfg, cluster, dialer)
+	gw := gateway.New(cfg, cluster, dialer)
 
-	hb := gateway.NewHeartbeat(cfg, cluster, func() {
+	hb := gateway.NewHeartbeat(cfg, cluster, dialer, func() {
 		log.Println("neo4g-gateway: primary is dead, triggering election")
 		go election.Run()
 	})
@@ -53,6 +54,7 @@ func main() {
 	if err := gw.Server().Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("neo4g-gateway: shutdown error: %v", err)
 	}
+	dialer.Close()
 
 	log.Println("neo4g-gateway: stopped")
 }

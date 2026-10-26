@@ -8,8 +8,12 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
+
+	"google.golang.org/grpc"
 
 	"github.com/seankohjs/neo4g/query"
+	"github.com/seankohjs/neo4g/rpcpb"
 )
 
 // Server wraps the database Engine with an HTTP API.
@@ -21,8 +25,15 @@ type Server struct {
 
 	mu          sync.RWMutex
 	role        string // "primary" or "replica"
-	primaryAddr string // address of primary (used by replicas)
+	primaryAddr string // gRPC address of the primary (used by replicas)
 	repl        *Replicator
+
+	ready     chan struct{}
+	readyOnce sync.Once
+	serveErr  error
+	grpcSrv   atomic.Pointer[grpc.Server]
+	boundHTTP string
+	boundGRPC string
 }
 
 // NewServer opens the database engine and sets up the HTTP server.
@@ -38,6 +49,7 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg:         cfg,
 		role:        cfg.Role,
 		primaryAddr: cfg.PrimaryAddr,
+		ready:       make(chan struct{}),
 	}
 
 	s.http = &http.Server{
@@ -111,27 +123,92 @@ func (s *Server) replicatorRunning() bool {
 	return s.repl != nil
 }
 
-// ListenAndServe starts serving HTTP requests. It blocks until the server
-// is shut down or encounters a fatal error.
+// ListenAndServe starts the public HTTP server and the internal gRPC server.
+// It blocks until HTTP is shut down or encounters a fatal error.
 func (s *Server) ListenAndServe() error {
-	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
+	httpLn, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		err = fmt.Errorf("listen http: %w", err)
+		s.markReady(err)
+		return err
 	}
-	log.Printf("neo4g: listening on %s (role=%s, node=%s)", ln.Addr(), s.Role(), s.cfg.NodeID)
-	err = s.http.Serve(ln)
+	grpcAddr := s.cfg.GRPCAddr
+	if grpcAddr == "" {
+		grpcAddr = ":9474"
+	}
+	grpcLn, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		httpLn.Close()
+		err = fmt.Errorf("listen grpc: %w", err)
+		s.markReady(err)
+		return err
+	}
+
+	gs := grpc.NewServer()
+	rpcpb.RegisterNodeServer(gs, &nodeService{srv: s})
+	s.grpcSrv.Store(gs)
+	s.boundHTTP = httpLn.Addr().String()
+	s.boundGRPC = grpcLn.Addr().String()
+	s.markReady(nil)
+
+	go func() {
+		if err := gs.Serve(grpcLn); err != nil {
+			log.Printf("neo4g: grpc server stopped: %v", err)
+		}
+	}()
+
+	log.Printf("neo4g: listening on %s (role=%s, node=%s)", httpLn.Addr(), s.Role(), s.cfg.NodeID)
+	log.Printf("neo4g: grpc on %s", grpcLn.Addr())
+	err = s.http.Serve(httpLn)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
 }
 
-// Shutdown gracefully drains HTTP connections, checkpoints the WAL,
+func (s *Server) markReady(err error) {
+	s.readyOnce.Do(func() {
+		s.serveErr = err
+		close(s.ready)
+	})
+}
+
+// WaitReady blocks until both listeners are bound, or ctx ends.
+func (s *Server) WaitReady(ctx context.Context) error {
+	select {
+	case <-s.ready:
+		return s.serveErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// BoundHTTPAddr returns the address HTTP is serving on. Valid after WaitReady.
+func (s *Server) BoundHTTPAddr() string { return s.boundHTTP }
+
+// BoundGRPCAddr returns the address the internal gRPC server is serving on.
+// Valid after WaitReady.
+func (s *Server) BoundGRPCAddr() string { return s.boundGRPC }
+
+// Shutdown stops replication, drains gRPC and HTTP, checkpoints the WAL,
 // and closes the database engine.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopReplicator()
 
 	var errs []error
+
+	if gs := s.grpcSrv.Load(); gs != nil {
+		stopped := make(chan struct{})
+		go func() {
+			gs.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-ctx.Done():
+			gs.Stop()
+		}
+	}
 
 	if err := s.http.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("http shutdown: %w", err))

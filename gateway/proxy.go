@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/seankohjs/neo4g/parser"
+	"github.com/seankohjs/neo4g/rpcpb"
 )
 
 const readAfterWriteWindow = 2 * time.Second
@@ -20,18 +21,22 @@ const readAfterWriteWindow = 2 * time.Second
 type Gateway struct {
 	cluster    *Cluster
 	cfg        Config
-	client     *http.Client
+	dialer     *Dialer
 	http       *http.Server
 	mu         sync.Mutex
 	lastWrites map[string]time.Time // per-client last write time, keyed by IP
 }
 
 // New creates a Gateway wired to the given cluster and config.
-func New(cfg Config, cluster *Cluster) *Gateway {
+// dialer reaches database nodes over gRPC. If dialer is nil, a private one is created.
+func New(cfg Config, cluster *Cluster, dialer *Dialer) *Gateway {
+	if dialer == nil {
+		dialer = NewDialer()
+	}
 	g := &Gateway{
 		cluster:    cluster,
 		cfg:        cfg,
-		client:     &http.Client{Timeout: 30 * time.Second},
+		dialer:     dialer,
 		lastWrites: make(map[string]time.Time),
 	}
 	mux := http.NewServeMux()
@@ -127,22 +132,46 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 	}
 
-	g.forward(w, target.Addr, body)
+	g.forward(w, r.Context(), target.Addr, req)
 }
 
-func (g *Gateway) forward(w http.ResponseWriter, addr string, body []byte) {
-	url := addr + "/api/query"
-	resp, err := g.client.Post(url, "application/json", bytes.NewReader(body))
+func (g *Gateway) forward(w http.ResponseWriter, ctx context.Context, addr string, req queryRequest) {
+	var paramsJSON []byte
+	if req.Params != nil {
+		var err error
+		paramsJSON, err = json.Marshal(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "encode params: "+err.Error())
+			return
+		}
+	}
+
+	api, err := g.dialer.Client(addr)
+	if err != nil {
+		log.Printf("gateway: dial %s failed: %v", addr, err)
+		writeError(w, http.StatusBadGateway, "upstream error: "+err.Error())
+		return
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := api.ExecuteQuery(callCtx, &rpcpb.ExecuteQueryRequest{
+		Query:      req.Query,
+		ParamsJson: paramsJSON,
+	})
 	if err != nil {
 		log.Printf("gateway: forward to %s failed: %v", addr, err)
 		writeError(w, http.StatusBadGateway, "upstream error: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	status := int(resp.GetHttpStatus())
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(resp.GetJsonBody())
 }
 
 func clientAddr(r *http.Request) string {

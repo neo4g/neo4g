@@ -1,16 +1,17 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+
+	"github.com/seankohjs/neo4g/rpcpb"
 	"github.com/seankohjs/neo4g/storage"
 	"github.com/seankohjs/neo4g/storage/wal"
 )
@@ -23,8 +24,9 @@ type Replicator struct {
 	primaryAddr  string
 	pollInterval time.Duration
 	appliedLSN   wal.LSN
-	client       *http.Client
 	pullCount    int // counts pull cycles for periodic drift check
+	conn         *grpc.ClientConn
+	api          rpcpb.NodeClient
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -41,7 +43,6 @@ func NewReplicator(engine *Engine, primaryAddr string, pollInterval time.Duratio
 		primaryAddr:  primaryAddr,
 		pollInterval: pollInterval,
 		appliedLSN:   startLSN - 1,
-		client:       &http.Client{Timeout: 5 * time.Second},
 		stopCh:       make(chan struct{}),
 	}
 }
@@ -56,6 +57,24 @@ func (r *Replicator) Start() {
 func (r *Replicator) Stop() {
 	close(r.stopCh)
 	r.wg.Wait()
+	if r.conn != nil {
+		r.conn.Close()
+		r.conn = nil
+		r.api = nil
+	}
+}
+
+func (r *Replicator) client() (rpcpb.NodeClient, error) {
+	if r.api != nil {
+		return r.api, nil
+	}
+	conn, err := rpcpb.Dial(r.primaryAddr)
+	if err != nil {
+		return nil, err
+	}
+	r.conn = conn
+	r.api = rpcpb.NewNodeClient(conn)
+	return r.api, nil
 }
 
 func (r *Replicator) loop() {
@@ -89,56 +108,46 @@ func (r *Replicator) loop() {
 	}
 }
 
-type walPullResponse struct {
-	Records []walRecordJSON `json:"records"`
-}
-
 func (r *Replicator) pull() error {
-	url := fmt.Sprintf("%s/api/wal/pull?from_lsn=%d", r.primaryAddr, r.appliedLSN+1)
-	resp, err := r.client.Get(url)
+	api, err := r.client()
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
+		return err
 	}
-	defer resp.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
-	}
-
-	var pullResp walPullResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pullResp); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	resp, err := api.PullWAL(ctx, &rpcpb.PullWALRequest{FromLsn: uint64(r.appliedLSN + 1)})
+	if err != nil {
+		return fmt.Errorf("PullWAL %s: %w", r.primaryAddr, err)
 	}
 
-	if len(pullResp.Records) > 0 {
+	records := resp.GetRecords()
+	if len(records) > 0 {
 		log.Printf("neo4g: replication pulled %d WAL record(s) from %s (LSN %d..%d)",
-			len(pullResp.Records), r.primaryAddr,
-			pullResp.Records[0].LSN, pullResp.Records[len(pullResp.Records)-1].LSN)
+			len(records), r.primaryAddr,
+			records[0].GetLsn(), records[len(records)-1].GetLsn())
 	}
 
-	for _, rec := range pullResp.Records {
+	for _, rec := range records {
 		if err := r.applyRecord(rec); err != nil {
-			return fmt.Errorf("apply LSN %d: %w", rec.LSN, err)
+			return fmt.Errorf("apply LSN %d: %w", rec.GetLsn(), err)
 		}
-		r.appliedLSN = wal.LSN(rec.LSN)
+		r.appliedLSN = wal.LSN(rec.GetLsn())
 		log.Printf("neo4g: applied WAL record LSN=%d type=%s tx=%d page=%d",
-			rec.LSN, walTypeName(rec.Type), rec.TxID, rec.PageID)
+			rec.GetLsn(), walTypeName(byte(rec.GetType())), rec.GetTxId(), rec.GetPageId())
 	}
 
 	return nil
 }
 
-func (r *Replicator) applyRecord(rec walRecordJSON) error {
+func (r *Replicator) applyRecord(rec *rpcpb.WALRecord) error {
 	pool := r.engine.Pool()
 	w := r.engine.WAL()
 
-	switch rec.Type {
+	switch byte(rec.GetType()) {
 	case wal.RecordUpdateDelta:
-		delta, err := base64.StdEncoding.DecodeString(rec.Data)
-		if err != nil {
-			return fmt.Errorf("decode delta: %w", err)
-		}
-		pageID := storage.PageID(rec.PageID)
+		delta := rec.GetData()
+		pageID := storage.PageID(rec.GetPageId())
 
 		page, err := pool.FetchPage(pageID)
 		if err != nil {
@@ -160,14 +169,14 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 		}
 
 		if w != nil {
-			if _, err := w.LogUpdate(storage.TxID(rec.TxID), pageID, &storage.Page{}, &applied); err != nil {
+			if _, err := w.LogUpdate(storage.TxID(rec.GetTxId()), pageID, &storage.Page{}, &applied); err != nil {
 				return fmt.Errorf("write local WAL: %w", err)
 			}
 		}
 
 	case wal.RecordCommit:
 		if w != nil {
-			if _, err := w.LogCommit(storage.TxID(rec.TxID)); err != nil {
+			if _, err := w.LogCommit(storage.TxID(rec.GetTxId())); err != nil {
 				return fmt.Errorf("write local WAL commit: %w", err)
 			}
 			if err := w.Sync(); err != nil {
@@ -177,7 +186,7 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 
 	case wal.RecordAbort:
 		if w != nil {
-			if _, err := w.LogAbort(storage.TxID(rec.TxID)); err != nil {
+			if _, err := w.LogAbort(storage.TxID(rec.GetTxId())); err != nil {
 				return fmt.Errorf("write local WAL abort: %w", err)
 			}
 		}
@@ -186,11 +195,8 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 		// skip checkpoints from primary
 
 	case wal.RecordUpdate:
-		data, err := base64.StdEncoding.DecodeString(rec.Data)
-		if err != nil {
-			return fmt.Errorf("decode data: %w", err)
-		}
-		pageID := storage.PageID(rec.PageID)
+		data := rec.GetData()
+		pageID := storage.PageID(rec.GetPageId())
 		if len(data) >= 2*storage.PageSize {
 			page, err := pool.FetchPage(pageID)
 			if err != nil {
@@ -209,33 +215,23 @@ func (r *Replicator) applyRecord(rec walRecordJSON) error {
 	return nil
 }
 
-type checksumResponse struct {
-	Checksum  string `json:"checksum"`
-	PageCount uint32 `json:"page_count"`
-	LSN       uint64 `json:"lsn"`
-}
-
 // checkDrift compares the local header checksum against the primary's.
 // Returns true if the replica has diverged and needs a full re-sync.
 func (r *Replicator) checkDrift() (bool, error) {
-	url := fmt.Sprintf("%s/api/checksum", r.primaryAddr)
-	resp, err := r.client.Get(url)
+	api, err := r.client()
 	if err != nil {
-		return false, fmt.Errorf("GET %s: %w", url, err)
+		return false, err
 	}
-	defer resp.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
-	}
-
-	var primary checksumResponse
-	if err := json.NewDecoder(resp.Body).Decode(&primary); err != nil {
-		return false, fmt.Errorf("decode checksum: %w", err)
+	primary, err := api.Checksum(ctx, &rpcpb.ChecksumRequest{})
+	if err != nil {
+		return false, fmt.Errorf("Checksum %s: %w", r.primaryAddr, err)
 	}
 
 	// If primary is ahead, that's not drift — we just haven't caught up yet.
-	if primary.LSN > uint64(r.appliedLSN) {
+	if primary.GetLsn() > uint64(r.appliedLSN) {
 		return false, nil
 	}
 
@@ -245,9 +241,9 @@ func (r *Replicator) checkDrift() (bool, error) {
 		return false, fmt.Errorf("local checksum: %w", err)
 	}
 
-	if localChecksum != primary.Checksum {
+	if localChecksum != primary.GetChecksum() {
 		log.Printf("neo4g: drift detected — local checksum %s != primary %s (lsn local=%d primary=%d)",
-			localChecksum, primary.Checksum, r.appliedLSN, primary.LSN)
+			localChecksum, primary.GetChecksum(), r.appliedLSN, primary.GetLsn())
 		return true, nil
 	}
 	return false, nil

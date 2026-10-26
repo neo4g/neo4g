@@ -24,7 +24,7 @@ Top-level database engine lifecycle and HTTP server. Wires all six storage layer
 - WAL recovery runs automatically on `Open()` if a non-empty WAL file exists (calls `txn.Recover`)
 - `Engine.Close()` must always be called — it flushes the pool, checkpoints the WAL, and closes files
 - `Config.WALNoSync = true` skips `fsync` per commit for benchmarks; never set this in correctness-sensitive tests
-- The HTTP server uses `net/http` standard library only — no external HTTP framework
+- The HTTP server uses `net/http` standard library only — no external HTTP framework. Internal cluster RPCs use gRPC (`server/grpc_server.go`).
 
 ### Testing Requirements
 - `go test ./server/...`
@@ -51,6 +51,9 @@ Top-level database engine lifecycle and HTTP server. Wires all six storage layer
 - `github.com/seankohjs/neo4g/query` — query execution
 
 ### External
-- Standard library only (`net/http`, `os`, `time`, `strconv`, etc.)
+- `google.golang.org/grpc` — internal node API (health, role, query forwarding, WAL pull, checksum). Client traffic stays on `net/http`.
+- Standard library (`net/http`, `os`, `time`, `strconv`, etc.)
 
 <!-- MANUAL: Any manually added notes below this line are preserved on regeneration -->
+
+Internal cluster calls use gRPC (`NEO4G_GRPC_ADDR`, default `:9474`). `POST /api/query` and `GET /api/health` remain HTTP. `NEO4G_PRIMARY_ADDR` is a gRPC `host:port`.

@@ -8,11 +8,13 @@ services:
       NEO4G_NODE_ID: node1
       NEO4G_ROLE: primary
       NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_GRPC_ADDR: ":9474"
       NEO4G_DATA_DIR: /data/node1
     volumes:
       - ./data/node1:/data/node1
     ports:
       - "7474:7474"
+      - "9474:9474"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7474/api/health"]
       interval: 2s
@@ -27,14 +29,16 @@ services:
     environment:
       NEO4G_NODE_ID: node2
       NEO4G_ROLE: replica
-      NEO4G_PRIMARY_ADDR: http://node1:7474
+      NEO4G_PRIMARY_ADDR: node1:9474
       NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_GRPC_ADDR: ":9474"
       NEO4G_DATA_DIR: /data/node2
       NEO4G_REPL_POLL_INTERVAL: 500ms
     volumes:
       - ./data/node2:/data/node2
     ports:
       - "7475:7474"
+      - "9475:9474"
     depends_on:
       node1:
         condition: service_healthy
@@ -52,14 +56,16 @@ services:
     environment:
       NEO4G_NODE_ID: node3
       NEO4G_ROLE: replica
-      NEO4G_PRIMARY_ADDR: http://node1:7474
+      NEO4G_PRIMARY_ADDR: node1:9474
       NEO4G_LISTEN_ADDR: ":7474"
+      NEO4G_GRPC_ADDR: ":9474"
       NEO4G_DATA_DIR: /data/node3
       NEO4G_REPL_POLL_INTERVAL: 500ms
     volumes:
       - ./data/node3:/data/node3
     ports:
       - "7476:7474"
+      - "9476:9474"
     depends_on:
       node1:
         condition: service_healthy
@@ -76,7 +82,7 @@ services:
     image: ghcr.io/neo4g/gateway:latest
     environment:
       NEO4G_GW_LISTEN_ADDR: ":7480"
-      NEO4G_GW_NODES: "node1=http://node1:7474,node2=http://node2:7474,node3=http://node3:7474"
+      NEO4G_GW_NODES: "node1=node1:9474,node2=node2:9474,node3=node3:9474"
       NEO4G_GW_HEARTBEAT_INTERVAL: 2s
       NEO4G_GW_HEARTBEAT_TIMEOUT: 6s
       NEO4G_GW_ELECTION_DELAY: 1s

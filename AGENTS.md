@@ -9,7 +9,7 @@ A minimal Neo4j-equivalent graph database written from scratch in Go for CS464. 
 
 | File | Description |
 |------|-------------|
-| `go.mod` | Module definition (`github.com/seankohjs/neo4g`); requires Go 1.25+, `golang.org/x/sync` |
+| `go.mod` | Module definition (`github.com/seankohjs/neo4g`); requires Go 1.25+, `golang.org/x/sync`, `google.golang.org/grpc` |
 | `go.sum` | Dependency checksums |
 | `README.md` | Build/run instructions, full API reference, Cypher-lite syntax guide |
 | `test.md` | Manual test notes / scratch pad |
@@ -20,7 +20,9 @@ A minimal Neo4j-equivalent graph database written from scratch in Go for CS464. 
 | Directory | Purpose |
 |-----------|---------|
 | `cmd/neo4g/` | Binary entry point — wires config, server, signal handling (see `cmd/neo4g/AGENTS.md`) |
-| `server/` | HTTP server, database engine lifecycle, configuration (see `server/AGENTS.md`) |
+| `server/` | HTTP client API, internal gRPC server, database engine lifecycle, configuration (see `server/AGENTS.md`) |
+| `gateway/` | HTTP gateway; routes queries and runs heartbeat/election over gRPC |
+| `rpcpb/` | Generated gRPC stubs for internal node communication (`proto/node.proto`) |
 | `parser/` | Cypher-lite lexer, AST nodes, recursive-descent parser (see `parser/AGENTS.md`) |
 | `query/` | Query executor — MATCH resolution, CREATE/RETURN/SET/DELETE dispatch (see `query/AGENTS.md`) |
 | `graph/` | Core domain model — Node, Edge, Value types (see `graph/AGENTS.md`) |
@@ -33,7 +35,7 @@ A minimal Neo4j-equivalent graph database written from scratch in Go for CS464. 
 - This is a CS464 academic project — intentionally minimal, no clustering, no query optimizer
 - Module path is `github.com/seankohjs/neo4g`; all imports use this prefix
 - Build with `go build -o neo4g ./cmd/neo4g`; test with `go test ./...`
-- Do not add external dependencies without strong justification — the current dep surface is intentionally tiny (`golang.org/x/sync` only)
+- Do not add external dependencies without strong justification — direct deps are `golang.org/x/sync` and `google.golang.org/grpc` (internal node RPC only; the client API stays HTTP)
 
 ### Testing Requirements
 - Unit tests: `go test ./...` (each package has `*_test.go` files)

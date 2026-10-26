@@ -13,7 +13,7 @@ A minimal Neo4j-equivalent graph database engine in Go (CS464). Property graph m
 
 ```
 ┌─────────────────────────────────────┐
-│  Protocol (HTTP)                    │  server/
+│  HTTP clients / gRPC internal      │  server/ + rpcpb/
 ├─────────────────────────────────────┤
 │  Cypher-lite Parser                 │  parser/
 ├─────────────────────────────────────┤

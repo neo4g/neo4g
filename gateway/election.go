@@ -1,13 +1,13 @@
 package gateway
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"log"
-	"net/http"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/seankohjs/neo4g/rpcpb"
 )
 
 // Election handles leader election when the primary goes down.
@@ -15,15 +15,18 @@ type Election struct {
 	mu      sync.Mutex
 	cluster *Cluster
 	cfg     Config
-	client  *http.Client
+	dialer  *Dialer
 }
 
 // NewElection creates a new election handler.
-func NewElection(cfg Config, cluster *Cluster) *Election {
+func NewElection(cfg Config, cluster *Cluster, dialer *Dialer) *Election {
+	if dialer == nil {
+		dialer = NewDialer()
+	}
 	return &Election{
 		cluster: cluster,
 		cfg:     cfg,
-		client:  &http.Client{Timeout: 5 * time.Second},
+		dialer:  dialer,
 	}
 }
 
@@ -115,29 +118,16 @@ func (e *Election) demote(addr, primaryAddr string) error {
 	return e.setRole(addr, "replica", primaryAddr)
 }
 
-type roleRequest struct {
-	Role        string `json:"role"`
-	PrimaryAddr string `json:"primary_addr,omitempty"`
-}
-
 func (e *Election) setRole(addr, role, primaryAddr string) error {
-	body, _ := json.Marshal(roleRequest{Role: role, PrimaryAddr: primaryAddr})
-	resp, err := e.client.Post(addr+"/api/role", "application/json", bytes.NewReader(body))
+	api, err := e.dialer.Client(addr)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return &httpError{status: resp.StatusCode, addr: addr}
-	}
-	return nil
-}
-
-type httpError struct {
-	status int
-	addr   string
-}
-
-func (e *httpError) Error() string {
-	return "POST " + e.addr + "/api/role: status " + http.StatusText(e.status)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = api.SetRole(ctx, &rpcpb.SetRoleRequest{
+		Role:        role,
+		PrimaryAddr: primaryAddr,
+	})
+	return err
 }

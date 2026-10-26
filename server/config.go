@@ -20,15 +20,18 @@ type Config struct {
 	WALNoSync bool // skip fsync per commit (faster writes, small durability risk)
 
 	// HTTP
-	ListenAddr      string        // address to bind HTTP server
+	ListenAddr      string        // address to bind the public HTTP server
 	ReadTimeout     time.Duration // max duration for reading request
 	WriteTimeout    time.Duration // max duration for writing response
 	ShutdownTimeout time.Duration // max duration for graceful shutdown drain
 
+	// Internal gRPC (gateway and replica traffic)
+	GRPCAddr string // address to bind the internal gRPC server
+
 	// Replication
 	NodeID           string        // unique node identifier (e.g. "node1")
 	Role             string        // "primary" or "replica"
-	PrimaryAddr      string        // address of primary (replicas pull WAL from here)
+	PrimaryAddr      string        // gRPC host:port of the primary (replicas pull WAL from here)
 	ReplPollInterval time.Duration // how often replicas poll for WAL records
 }
 
@@ -41,6 +44,7 @@ func DefaultConfig() Config {
 		WALFile:          "neo4g.wal",
 		PoolSize:         1024,
 		ListenAddr:       ":7474",
+		GRPCAddr:         ":9474",
 		ReadTimeout:      30 * time.Second,
 		WriteTimeout:     30 * time.Second,
 		ShutdownTimeout:  10 * time.Second,
@@ -59,6 +63,7 @@ func DefaultConfig() Config {
 //	NEO4G_WAL_FILE         → WALFile
 //	NEO4G_POOL_SIZE        → PoolSize
 //	NEO4G_LISTEN_ADDR      → ListenAddr
+//	NEO4G_GRPC_ADDR        → GRPCAddr
 //	NEO4G_READ_TIMEOUT     → ReadTimeout (Go duration string, e.g. "30s")
 //	NEO4G_WRITE_TIMEOUT    → WriteTimeout
 //	NEO4G_SHUTDOWN_TIMEOUT → ShutdownTimeout
@@ -93,6 +98,9 @@ func ConfigFromEnv() Config {
 	}
 	if v := os.Getenv("NEO4G_LISTEN_ADDR"); v != "" {
 		cfg.ListenAddr = v
+	}
+	if v := os.Getenv("NEO4G_GRPC_ADDR"); v != "" {
+		cfg.GRPCAddr = v
 	}
 	if v := os.Getenv("NEO4G_READ_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

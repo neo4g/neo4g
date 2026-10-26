@@ -68,7 +68,8 @@ func ConfigFromEnv() Config {
 	return cfg
 }
 
-// parseNodes parses "node1=http://host:port,node2=http://host:port" into NodeConfig slice.
+// parseNodes parses "node1=host:port,node2=host:port" into NodeConfig slice.
+// Addresses are internal gRPC endpoints (host:port).
 func parseNodes(s string) []NodeConfig {
 	var nodes []NodeConfig
 	for _, pair := range strings.Split(s, ",") {

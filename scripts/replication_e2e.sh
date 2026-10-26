@@ -124,47 +124,53 @@ echo "Starting 3-node cluster..."
 # Node 1 (primary)
 N1_LOG="$TMPDIR_E2E/node1.log"
 NEO4G_NODE_ID=node1 NEO4G_ROLE=primary NEO4G_LISTEN_ADDR="127.0.0.1:0" \
+    NEO4G_GRPC_ADDR="127.0.0.1:0" \
     NEO4G_DATA_DIR="$TMPDIR_E2E/data1" "$NEO4G_BIN" > "$N1_LOG" 2>&1 &
 PIDS+=($!)
 
 N1_PORT=$(wait_for_port "$N1_LOG" 'listening on 127\.0\.0\.1:[0-9]+')
-if [[ -z "$N1_PORT" ]]; then
+N1_GRPC=$(wait_for_port "$N1_LOG" 'grpc on 127\.0\.0\.1:[0-9]+')
+if [[ -z "$N1_PORT" || -z "$N1_GRPC" ]]; then
     echo "ERROR: node1 failed to start"; cat "$N1_LOG" 2>/dev/null; exit 1
 fi
-echo "  node1 (primary) on port $N1_PORT"
+echo "  node1 (primary) http :$N1_PORT grpc :$N1_GRPC"
 
 # Node 2 (replica)
 N2_LOG="$TMPDIR_E2E/node2.log"
-NEO4G_NODE_ID=node2 NEO4G_ROLE=replica NEO4G_PRIMARY_ADDR="http://127.0.0.1:${N1_PORT}" \
-    NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_DATA_DIR="$TMPDIR_E2E/data2" \
+NEO4G_NODE_ID=node2 NEO4G_ROLE=replica NEO4G_PRIMARY_ADDR="127.0.0.1:${N1_GRPC}" \
+    NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_GRPC_ADDR="127.0.0.1:0" \
+    NEO4G_DATA_DIR="$TMPDIR_E2E/data2" \
     NEO4G_REPL_POLL_INTERVAL="200ms" "$NEO4G_BIN" > "$N2_LOG" 2>&1 &
 PIDS+=($!)
 
 N2_PORT=$(wait_for_port "$N2_LOG" 'listening on 127\.0\.0\.1:[0-9]+')
-if [[ -z "$N2_PORT" ]]; then
+N2_GRPC=$(wait_for_port "$N2_LOG" 'grpc on 127\.0\.0\.1:[0-9]+')
+if [[ -z "$N2_PORT" || -z "$N2_GRPC" ]]; then
     echo "ERROR: node2 failed to start"; cat "$N2_LOG" 2>/dev/null; exit 1
 fi
-echo "  node2 (replica) on port $N2_PORT"
+echo "  node2 (replica) http :$N2_PORT grpc :$N2_GRPC"
 
 # Node 3 (replica)
 N3_LOG="$TMPDIR_E2E/node3.log"
-NEO4G_NODE_ID=node3 NEO4G_ROLE=replica NEO4G_PRIMARY_ADDR="http://127.0.0.1:${N1_PORT}" \
-    NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_DATA_DIR="$TMPDIR_E2E/data3" \
+NEO4G_NODE_ID=node3 NEO4G_ROLE=replica NEO4G_PRIMARY_ADDR="127.0.0.1:${N1_GRPC}" \
+    NEO4G_LISTEN_ADDR="127.0.0.1:0" NEO4G_GRPC_ADDR="127.0.0.1:0" \
+    NEO4G_DATA_DIR="$TMPDIR_E2E/data3" \
     NEO4G_REPL_POLL_INTERVAL="200ms" "$NEO4G_BIN" > "$N3_LOG" 2>&1 &
 PIDS+=($!)
 
 N3_PORT=$(wait_for_port "$N3_LOG" 'listening on 127\.0\.0\.1:[0-9]+')
-if [[ -z "$N3_PORT" ]]; then
+N3_GRPC=$(wait_for_port "$N3_LOG" 'grpc on 127\.0\.0\.1:[0-9]+')
+if [[ -z "$N3_PORT" || -z "$N3_GRPC" ]]; then
     echo "ERROR: node3 failed to start"; cat "$N3_LOG" 2>/dev/null; exit 1
 fi
-echo "  node3 (replica) on port $N3_PORT"
+echo "  node3 (replica) http :$N3_PORT grpc :$N3_GRPC"
 
 # ── Start gateway ───────────────────────────────────────────────────
 echo ""
 echo "Starting gateway..."
 GW_LOG="$TMPDIR_E2E/gateway.log"
 NEO4G_GW_LISTEN_ADDR="127.0.0.1:0" \
-    NEO4G_GW_NODES="node1=http://127.0.0.1:${N1_PORT},node2=http://127.0.0.1:${N2_PORT},node3=http://127.0.0.1:${N3_PORT}" \
+    NEO4G_GW_NODES="node1=127.0.0.1:${N1_GRPC},node2=127.0.0.1:${N2_GRPC},node3=127.0.0.1:${N3_GRPC}" \
     NEO4G_GW_HEARTBEAT_INTERVAL="1s" NEO4G_GW_HEARTBEAT_TIMEOUT="3s" \
     NEO4G_GW_ELECTION_DELAY="500ms" \
     "$GW_BIN" > "$GW_LOG" 2>&1 &
