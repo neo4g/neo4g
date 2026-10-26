@@ -278,27 +278,107 @@ func (dm *Manager) RefreshHeaderFromPage(p *storage.Page) {
 
 // --- Index root persistence ---
 
-func (dm *Manager) NodeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodeIndexRoot }
-func (dm *Manager) EdgeIndexRoot() storage.PageID  { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgeIndexRoot }
-func (dm *Manager) OutIndexRoot() storage.PageID   { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.outIndexRoot }
-func (dm *Manager) InIndexRoot() storage.PageID    { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.inIndexRoot }
+func (dm *Manager) NodeIndexRoot() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.nodeIndexRoot
+}
+func (dm *Manager) EdgeIndexRoot() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.edgeIndexRoot
+}
+func (dm *Manager) OutIndexRoot() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.outIndexRoot
+}
+func (dm *Manager) InIndexRoot() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.inIndexRoot
+}
 
-func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodeIndexRoot = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgeIndexRoot = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetOutIndexRoot(id storage.PageID) error  { dm.mu.Lock(); defer dm.mu.Unlock(); dm.outIndexRoot = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetInIndexRoot(id storage.PageID) error   { dm.mu.Lock(); defer dm.mu.Unlock(); dm.inIndexRoot = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetNodeIndexRoot(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.nodeIndexRoot = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetEdgeIndexRoot(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.edgeIndexRoot = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetOutIndexRoot(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.outIndexRoot = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetInIndexRoot(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.inIndexRoot = id
+	dm.headerDirty = true
+	return nil
+}
 
 // --- Record page chain persistence ---
 
-func (dm *Manager) NodePageHead() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodePageHead }
-func (dm *Manager) NodePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.nodePageTail }
-func (dm *Manager) EdgePageHead() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageHead }
-func (dm *Manager) EdgePageTail() storage.PageID { dm.mu.Lock(); defer dm.mu.Unlock(); return dm.edgePageTail }
+func (dm *Manager) NodePageHead() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.nodePageHead
+}
+func (dm *Manager) NodePageTail() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.nodePageTail
+}
+func (dm *Manager) EdgePageHead() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.edgePageHead
+}
+func (dm *Manager) EdgePageTail() storage.PageID {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	return dm.edgePageTail
+}
 
-func (dm *Manager) SetNodePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageHead = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetNodePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.nodePageTail = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetEdgePageHead(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageHead = id; dm.headerDirty = true; return nil }
-func (dm *Manager) SetEdgePageTail(id storage.PageID) error { dm.mu.Lock(); defer dm.mu.Unlock(); dm.edgePageTail = id; dm.headerDirty = true; return nil }
+func (dm *Manager) SetNodePageHead(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.nodePageHead = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetNodePageTail(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.nodePageTail = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetEdgePageHead(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.edgePageHead = id
+	dm.headerDirty = true
+	return nil
+}
+func (dm *Manager) SetEdgePageTail(id storage.PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.edgePageTail = id
+	dm.headerDirty = true
+	return nil
+}
 
 // --- Internal helpers (caller must hold dm.mu) ---
 

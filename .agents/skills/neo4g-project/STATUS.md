@@ -54,3 +54,4 @@
 - 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP
 - 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)
 - 2026-10-26: Fix MATCH correctness for empty joins, shared names, endpoints, property maps, labels, and comparisons; align write result columns (`query/`)
+- 2026-10-26: Pull requests run `go test ./...` only; Docker image publish is skipped on `pull_request` (`.github/workflows/docker-publish.yml`)
