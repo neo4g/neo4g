@@ -68,6 +68,24 @@ func ConfigFromEnv() Config {
 	return cfg
 }
 
+// consecutiveFailures is how many missed heartbeats mark a node dead.
+// HeartbeatTimeout is the detection window; a single failure is not enough.
+func (c Config) consecutiveFailures() int {
+	interval := c.HeartbeatInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	timeout := c.HeartbeatTimeout
+	if timeout <= 0 {
+		timeout = 3 * interval
+	}
+	n := int((timeout + interval - 1) / interval)
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
 // parseNodes parses "node1=host:port,node2=host:port" into NodeConfig slice.
 // Addresses are internal gRPC endpoints (host:port).
 func parseNodes(s string) []NodeConfig {

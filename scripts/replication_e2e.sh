@@ -258,12 +258,37 @@ echo "Killing node1 (primary)..."
 kill "${PIDS[0]}" 2>/dev/null || true
 wait "${PIDS[0]}" 2>/dev/null || true
 
-# Wait for heartbeat to detect failure + election
-sleep 5
+# Poll until a surviving node reports primary. HeartbeatTimeout requires
+# consecutive failures, so this waits on that election instead of a fixed sleep.
+echo "Waiting for a new primary..."
+NEW_PORT=""
+for _ in $(seq 1 40); do
+    for port in "$N2_PORT" "$N3_PORT"; do
+        if health "$port" | grep -q '"role":"primary"'; then
+            NEW_PORT="$port"
+            break
+        fi
+    done
+    if [[ -n "$NEW_PORT" ]]; then
+        break
+    fi
+    sleep 0.25
+done
 
-# Gateway should have elected a new primary
 GW_HEALTH=$(health "$GW_PORT")
 echo "  Gateway health: $GW_HEALTH"
+if [[ -z "$NEW_PORT" ]]; then
+    echo "  FAIL  no new primary elected"
+    echo "        node2: $(health "$N2_PORT")"
+    echo "        node3: $(health "$N3_PORT")"
+    FAIL=$((FAIL + 1))
+else
+    echo "  new primary http :$NEW_PORT"
+    RESP=$(query_via "$NEW_PORT" 'MATCH (n:Person) RETURN n.name')
+    BODY=$(assert_ok "Read pre-failover keys from new primary" "$RESP") || true
+    assert_contains "Alice survived failover" "$BODY" "Alice"
+    assert_contains "Bob survived failover" "$BODY" "Bob"
+fi
 
 # Write through gateway should still work (new primary)
 RESP=$(query_via "$GW_PORT" 'CREATE (n:Person {name: "Charlie", age: 20})')

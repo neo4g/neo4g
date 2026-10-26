@@ -258,6 +258,20 @@ func (w *WAL) NextLSN() LSN {
 	return w.nextLSN
 }
 
+// SetNextLSN raises the next LSN that will be assigned. A value at or below
+// the current counter is ignored, so callers can continue a published primary
+// sequence after the on-disk log was truncated without ever reusing an LSN.
+func (w *WAL) SetNextLSN(lsn LSN) {
+	if lsn == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if lsn > w.nextLSN {
+		w.nextLSN = lsn
+	}
+}
+
 // ReadFrom reads all WAL records with LSN >= fromLSN.
 func (w *WAL) ReadFrom(fromLSN LSN) ([]Record, error) {
 	all, err := w.ReadAll()

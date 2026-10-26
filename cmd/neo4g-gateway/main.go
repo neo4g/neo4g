@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -24,29 +25,38 @@ func main() {
 
 	hb := gateway.NewHeartbeat(cfg, cluster, dialer, func() {
 		log.Println("neo4g-gateway: primary is dead, triggering election")
-		go election.Run()
+		election.Trigger()
 	})
 	hb.OnStalePrimary(func(staleNodeID string) {
-		go election.Demote(staleNodeID)
+		election.TriggerDemote(staleNodeID)
 	})
 	hb.OnWrongPrimary(func(replicaNodeID, shouldFollow string) {
-		go election.Redirect(replicaNodeID, shouldFollow)
+		election.TriggerRedirect(replicaNodeID, shouldFollow)
 	})
 	hb.Start()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	serveErr := make(chan error, 1)
 	go func() {
-		if err := gw.ListenAndServe(); err != nil {
-			log.Fatalf("neo4g-gateway: server error: %v", err)
-		}
+		serveErr <- gw.ListenAndServe()
 	}()
 
-	<-ctx.Done()
-	log.Println("neo4g-gateway: shutting down...")
+	var failed error
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		failed = err
+		if err != nil {
+			log.Printf("neo4g-gateway: server error: %v", err)
+		}
+		stop()
+	}
 
+	log.Println("neo4g-gateway: shutting down...")
 	hb.Stop()
+	election.Shutdown()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -57,4 +67,7 @@ func main() {
 	dialer.Close()
 
 	log.Println("neo4g-gateway: stopped")
+	if failed != nil {
+		os.Exit(1)
+	}
 }

@@ -6,6 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+
 	"github.com/neo4g/neo4g/rpcpb"
 )
 
@@ -13,7 +16,7 @@ import (
 type Heartbeat struct {
 	cluster        *Cluster
 	cfg            Config
-	dialer         *Dialer
+	dialer         NodeDialer
 	onPrimaryDead  func()
 	onStalePrimary func(staleNodeID string)                        // node claims primary but gateway disagrees
 	onWrongPrimary func(replicaNodeID string, shouldFollow string) // replica following wrong primary
@@ -24,7 +27,7 @@ type Heartbeat struct {
 
 // NewHeartbeat creates a new heartbeat monitor.
 // onPrimaryDead is called when the primary is detected as dead.
-func NewHeartbeat(cfg Config, cluster *Cluster, dialer *Dialer, onPrimaryDead func()) *Heartbeat {
+func NewHeartbeat(cfg Config, cluster *Cluster, dialer NodeDialer, onPrimaryDead func()) *Heartbeat {
 	if dialer == nil {
 		dialer = NewDialer()
 	}
@@ -63,6 +66,7 @@ func (h *Heartbeat) Stop() {
 
 func (h *Heartbeat) loop() {
 	defer h.wg.Done()
+	h.beat()
 	ticker := time.NewTicker(h.cfg.HeartbeatInterval)
 	defer ticker.Stop()
 
@@ -71,11 +75,15 @@ func (h *Heartbeat) loop() {
 		case <-h.stopCh:
 			return
 		case <-ticker.C:
-			h.pingAll()
-			if h.cluster.IsPrimaryDead() && h.onPrimaryDead != nil {
-				h.onPrimaryDead()
-			}
+			h.beat()
 		}
+	}
+}
+
+func (h *Heartbeat) beat() {
+	h.pingAll()
+	if h.cluster.IsPrimaryDead() && h.onPrimaryDead != nil {
+		h.onPrimaryDead()
 	}
 }
 
@@ -95,23 +103,28 @@ func (h *Heartbeat) pingAll() {
 func (h *Heartbeat) ping(node NodeState) {
 	api, err := h.dialer.Client(node.Addr)
 	if err != nil {
-		h.cluster.MarkDead(node.ID)
+		h.cluster.NoteFailure(node.ID, h.cfg.consecutiveFailures())
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.HeartbeatInterval)
 	defer cancel()
-	hr, err := api.Health(ctx, &rpcpb.HealthRequest{})
+	var hdr metadata.MD
+	hr, err := api.Health(ctx, &rpcpb.HealthRequest{}, grpc.Header(&hdr))
 	if err != nil {
-		h.cluster.MarkDead(node.ID)
+		h.cluster.NoteFailure(node.ID, h.cfg.consecutiveFailures())
 		return
 	}
 
-	h.cluster.UpdateHealth(node.ID, true, hr.GetRole(), hr.GetLsn())
-	log.Printf("gateway: heartbeat %s → alive (role=%s, lsn=%d)", node.ID, hr.GetRole(), hr.GetLsn())
+	gen := rpcpb.GenerationFromHeader(hdr)
+	h.cluster.UpdateHealth(node.ID, true, hr.GetRole(), hr.GetLsn(), gen)
+	log.Printf("gateway: heartbeat %s → alive (role=%s, applied_lsn=%d, generation=%d)", node.ID, hr.GetRole(), hr.GetLsn(), gen)
 
-	if hr.GetRole() == "primary" && h.cluster.PrimaryID() != node.ID && h.onStalePrimary != nil {
-		log.Printf("gateway: node %s claims primary but %s is the actual primary — demoting", node.ID, h.cluster.PrimaryID())
+	// UpdateHealth does not adopt a self-reported primary, so this fires when
+	// the node disagrees with the gateway's choice.
+	chosen := h.cluster.PrimaryID()
+	if hr.GetRole() == "primary" && chosen != "" && chosen != node.ID && h.onStalePrimary != nil {
+		log.Printf("gateway: node %s claims primary but %s is the actual primary — demoting", node.ID, chosen)
 		h.onStalePrimary(node.ID)
 	}
 

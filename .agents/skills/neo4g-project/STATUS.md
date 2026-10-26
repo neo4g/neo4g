@@ -55,6 +55,8 @@
 - 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)
 - 2026-10-26: Fix MATCH correctness for empty joins, shared names, endpoints, property maps, labels, and comparisons; align write result columns (`query/`)
 - 2026-10-26: Pull requests run `go test ./...` only; Docker image publish is skipped on `pull_request` (`.github/workflows/docker-publish.yml`)
+- 2026-10-26: Gateway is the only primary (generation fence); failover ranks the persisted applied primary LSN; replicas reject truncated-log gaps and serve reads only when caught up to the client's last successful write (`gateway/`, `server/`, `storage/wal/`)
 - 2026-10-26: Split MATCH expansion so the merged query executor stays within the lint complexity limit (`query/`)
 - 2026-10-26: Storage durability — persist B+Tree roots on split, force the WAL before data pages, log the header catalog, undo into the buffer pool, keep checkpoint history and monotonic LSNs, CRC torn tails (`storage/`)
 - 2026-10-26: Merged main's lint and test workflows; record-manager page parameter no longer shadows the page import (`storage/record`, `.github/workflows`)
+- 2026-10-26: Replication safety sits on durable WAL history: checkpoints keep the log and monotonic LSNs, while gateway fencing, the applied primary LSN, and hard-fail empty pulls stay (`gateway/`, `server/`, `storage/`)

@@ -43,6 +43,7 @@ func (s *Server) routes() *http.ServeMux {
 
 // handleQuery parses and executes a Cypher-lite query.
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())

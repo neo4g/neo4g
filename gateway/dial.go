@@ -10,6 +10,11 @@ import (
 	"github.com/neo4g/neo4g/rpcpb"
 )
 
+// NodeDialer opens internal node clients. Tests substitute a fake.
+type NodeDialer interface {
+	Client(addr string) (rpcpb.NodeClient, error)
+}
+
 // Dialer caches one gRPC connection per node address.
 type Dialer struct {
 	mu    sync.Mutex
