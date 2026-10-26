@@ -2,7 +2,8 @@ name: Lint
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
+    tags: ["v*"]
     paths:
       - "**.go"
       - go.mod
@@ -19,6 +20,10 @@ on:
       - Makefile
       - .golangci.yml
       - ".github/workflows/lint.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:

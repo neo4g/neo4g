@@ -60,3 +60,4 @@
 - 2026-10-26: Storage durability — persist B+Tree roots on split, force the WAL before data pages, log the header catalog, undo into the buffer pool, keep checkpoint history and monotonic LSNs, CRC torn tails (`storage/`)
 - 2026-10-26: Merged main's lint and test workflows; record-manager page parameter no longer shadows the page import (`storage/record`, `.github/workflows`)
 - 2026-10-26: Replication safety sits on durable WAL history: checkpoints keep the log and monotonic LSNs, while gateway fencing, the applied primary LSN, and hard-fail empty pulls stay (`gateway/`, `server/`, `storage/`)
+- 2026-10-26: Lint and E2E no longer run on feature-branch pushes, so pull requests schedule each check once; newer pushes cancel the in-progress run (`.github/workflows`)
