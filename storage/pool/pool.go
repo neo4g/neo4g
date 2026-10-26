@@ -20,7 +20,8 @@ type frame struct {
 	pinCount atomic.Int32
 	dirty    atomic.Bool
 	refBit   atomic.Bool
-	valid    bool // only mutated under write lock
+	hdrGen   uint64 // header generation observed when page 0 was loaded
+	valid    bool   // only mutated under write lock
 }
 
 // Pool is an in-memory cache of disk pages with clock-sweep eviction.
@@ -48,14 +49,18 @@ func New(dm *disk.Manager, poolSize int) *Pool {
 // FetchPage returns the page with the given ID, loading it from disk if not
 // already cached. The page is pinned — the caller MUST call UnpinPage when done.
 func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
-	// Fast path: cache hit under read lock
+	// Fast path: cache hit under read lock. A stale header frame falls
+	// through so it can be reloaded from the disk manager.
 	bp.mu.RLock()
 	if idx, ok := bp.index[id]; ok {
 		f := &bp.pages[idx]
-		f.pinCount.Add(1)
-		f.refBit.Store(true)
-		bp.mu.RUnlock()
-		return &f.page, nil
+		headerFresh := id != storage.HeaderPageID || f.hdrGen == bp.disk.HeaderGen() || f.pinCount.Load() > 0
+		if headerFresh {
+			f.pinCount.Add(1)
+			f.refBit.Store(true)
+			bp.mu.RUnlock()
+			return &f.page, nil
+		}
 	}
 	bp.mu.RUnlock()
 
@@ -66,6 +71,11 @@ func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
 	// Double-check: another goroutine may have loaded it
 	if idx, ok := bp.index[id]; ok {
 		f := &bp.pages[idx]
+		if id == storage.HeaderPageID && f.pinCount.Load() == 0 && f.hdrGen != bp.disk.HeaderGen() {
+			f.page = bp.disk.HeaderImage()
+			f.hdrGen = bp.disk.HeaderGen()
+			f.dirty.Store(false)
+		}
 		f.pinCount.Add(1)
 		f.refBit.Store(true)
 		return &f.page, nil
@@ -84,12 +94,17 @@ func (bp *Pool) FetchPage(id storage.PageID) (*storage.Page, error) {
 		}
 	}
 
-	p, err := bp.disk.ReadPage(id)
-	if err != nil {
-		return nil, fmt.Errorf("fetch page %d: %w", id, err)
+	if id == storage.HeaderPageID {
+		f.page = bp.disk.HeaderImage()
+		f.hdrGen = bp.disk.HeaderGen()
+	} else {
+		p, err := bp.disk.ReadPage(id)
+		if err != nil {
+			return nil, fmt.Errorf("fetch page %d: %w", id, err)
+		}
+		f.page = *p
+		f.hdrGen = 0
 	}
-
-	f.page = *p
 	f.pageID = id
 	f.pinCount.Store(1)
 	f.dirty.Store(false)
@@ -136,6 +151,18 @@ func (bp *Pool) NewPage() (storage.PageID, *storage.Page, error) {
 		return 0, nil, fmt.Errorf("allocate page: %w", err)
 	}
 
+	if idx, ok := bp.index[id]; ok && bp.pages[idx].pinCount.Load() == 0 {
+		f := &bp.pages[idx]
+		f.page = *diskPage
+		f.pageID = id
+		f.pinCount.Store(1)
+		f.dirty.Store(false)
+		f.refBit.Store(true)
+		f.valid = true
+		f.hdrGen = 0
+		return id, &f.page, nil
+	}
+
 	idx, err := bp.findVictim()
 	if err != nil {
 		return 0, nil, err
@@ -155,6 +182,7 @@ func (bp *Pool) NewPage() (storage.PageID, *storage.Page, error) {
 	f.dirty.Store(false)
 	f.refBit.Store(true)
 	f.valid = true
+	f.hdrGen = 0
 	bp.index[id] = idx
 
 	return id, &f.page, nil
@@ -171,11 +199,8 @@ func (bp *Pool) FlushPage(id storage.PageID) error {
 	}
 
 	f := &bp.pages[idx]
-	if f.dirty.Load() {
-		if err := bp.disk.WritePage(id, &f.page); err != nil {
-			return fmt.Errorf("flush page %d: %w", id, err)
-		}
-		f.dirty.Store(false)
+	if err := bp.writeFrame(f); err != nil {
+		return fmt.Errorf("flush page %d: %w", id, err)
 	}
 	return nil
 }
@@ -187,14 +212,41 @@ func (bp *Pool) FlushAll() error {
 
 	for i := range bp.pages {
 		f := &bp.pages[i]
-		if f.valid && f.dirty.Load() {
-			if err := bp.disk.WritePage(f.pageID, &f.page); err != nil {
-				return fmt.Errorf("flush page %d: %w", f.pageID, err)
-			}
-			f.dirty.Store(false)
+		if !f.valid {
+			continue
+		}
+		if err := bp.writeFrame(f); err != nil {
+			return fmt.Errorf("flush page %d: %w", f.pageID, err)
 		}
 	}
 	return nil
+}
+
+// Install copies src into the cached frame for id and marks it dirty.
+// Returns false when id is not cached. Page 0 is not installed here; the
+// disk manager is the only writer of the header.
+func (bp *Pool) Install(id storage.PageID, src *storage.Page) bool {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	idx, ok := bp.index[id]
+	if !ok || id == storage.HeaderPageID {
+		return false
+	}
+	f := &bp.pages[idx]
+	f.page = *src
+	f.dirty.Store(true)
+	return true
+}
+
+// Cached returns a copy of a cached page. The bool is false on a miss.
+func (bp *Pool) Cached(id storage.PageID) (storage.Page, bool) {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
+	idx, ok := bp.index[id]
+	if !ok {
+		return storage.Page{}, false
+	}
+	return bp.pages[idx].page, true
 }
 
 // --- Internal helpers (caller must hold bp.mu write lock) ---
@@ -226,14 +278,39 @@ func (bp *Pool) findVictim() (int, error) {
 
 func (bp *Pool) evict(idx int) error {
 	f := &bp.pages[idx]
-	if f.dirty.Load() {
-		if err := bp.disk.WritePage(f.pageID, &f.page); err != nil {
-			return err
-		}
+	if err := bp.writeFrame(f); err != nil {
+		return err
 	}
 	delete(bp.index, f.pageID)
 	f.valid = false
 	f.dirty.Store(false)
 	f.pinCount.Store(0)
+	return nil
+}
+
+// writeFrame persists a dirty frame. Page 0 is adopted by the disk manager
+// when the frame still matches the catalog generation; a stale header frame
+// is dropped so it cannot overwrite a newer catalog.
+func (bp *Pool) writeFrame(f *frame) error {
+	if !f.valid || !f.dirty.Load() {
+		return nil
+	}
+	if f.pageID == storage.HeaderPageID {
+		if f.hdrGen != bp.disk.HeaderGen() {
+			f.dirty.Store(false)
+			return nil
+		}
+		img := f.page
+		if err := bp.disk.InstallHeaderImage(&img); err != nil {
+			return err
+		}
+		f.dirty.Store(false)
+		f.hdrGen = bp.disk.HeaderGen()
+		return nil
+	}
+	if err := bp.disk.WritePage(f.pageID, &f.page); err != nil {
+		return err
+	}
+	f.dirty.Store(false)
 	return nil
 }

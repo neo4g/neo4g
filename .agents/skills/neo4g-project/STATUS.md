@@ -8,19 +8,19 @@
 |-----------|---------|--------|-------|
 | **Domain Model** | `graph/` | `done` | Node, Edge, Value types, constructors |
 | **Shared Types** | `storage/` | `done` | Page, PageID, RID, TxID, consts + Store/Scanner/Index/PageManager interfaces |
-| **Disk Manager** | `storage/disk/` | `done` | Raw I/O, free list, ID counters, header page, index root + page chain persistence |
-| **Write-Ahead Log** | `storage/wal/` | `done` | Full-page-image WAL, commit/abort/checkpoint records |
-| **Buffer Pool** | `storage/pool/` | `done` | Clock-sweep eviction, pin/unpin, dirty tracking; implements PageManager |
-| **Slotted Pages** | `storage/page/` | `done` | Variable-size records, slot directory, compaction |
-| **Binary Encoding** | `storage/encoding/` | `done` | Node/Edge binary codec |
+| **Disk Manager** | `storage/disk/` | `done` | Page I/O, free list, ID counters; catalog image is the only writer of page 0; redo can extend the file |
+| **Write-Ahead Log** | `storage/wal/` | `done` | Delta records with CRC, group-commit Force, torn-tail truncation; checkpoints do not reset LSNs |
+| **Buffer Pool** | `storage/pool/` | `done` | Clock-sweep eviction; data writes go through the disk manager so the WAL is forced first; stale page 0 is not flushed |
+| **Slotted Pages** | `storage/page/` | `done` | Variable-size records; oversized inserts rejected before mutation; compaction uses a scratch buffer |
+| **Binary Encoding** | `storage/encoding/` | `done` | Node/Edge codec; property keys written in sorted order |
 | **Record Manager** | `storage/record/` | `done` | Node/Edge CRUD wired to B+Tree indexes and optional txn; implements Store + Scanner |
-| **B+Tree Index** | `storage/index/` | `done` | Search, insert, delete, range scan; implements Index |
-| **Index Manager** | `storage/index/` | `done` | 4 trees (Node, Edge, Out, In) + LoadManager for persistence |
-| **Tx Manager** | `storage/txn/` | `done` | Begin/commit/abort, page-level locking |
-| **ARIES Recovery** | `storage/txn/` | `done` | Analysis, redo, undo passes |
+| **B+Tree Index** | `storage/index/` | `done` | Search, insert, delete, range scan; leaf lookup is binary search; root splits update the header |
+| **Index Manager** | `storage/index/` | `done` | 4 trees (Node, Edge, Out, In); roots persisted on create and on root split; abort restores the committed root |
+| **Tx Manager** | `storage/txn/` | `done` | Begin/commit/abort, page-level locking; commit syncs the WAL (including the catalog) before flushing the header; NoSync is the benchmark opt-out |
+| **ARIES Recovery** | `storage/txn/` | `done` | Redo/undo after the last checkpoint; runtime undo installs before-images into the buffer pool; log history is kept |
 | **RecordManager ↔ Index wiring** | `storage/record/` + `storage/index/` | `done` | B+Tree replaces in-memory maps |
 | **RecordManager ↔ Txn wiring** | `storage/record/` + `storage/txn/` | `done` | Optional auto-tx per CRUD call with before-image capture |
-| **Index root persistence** | `storage/disk/` + `storage/index/` | `done` | 4 roots + 4 page chain pointers in header |
+| **Index root persistence** | `storage/disk/` + `storage/index/` | `done` | 4 roots + 4 page chain pointers in the header, logged with the committing transaction |
 | **Formal interfaces** | `storage/` | `done` | Store, Scanner, Index, PageManager in storage/ifaces.go |
 | **Scanner methods** | `storage/record/` | `done` | ScanNodes, ScanEdges, Expand |
 | **Query parser** | `parser/` | `done` | Cypher-lite lexer + recursive-descent parser; tokens, AST, full test suite (renamed from query/) |
@@ -53,3 +53,4 @@
 - 2026-03-19: Query executor engine — expression evaluator, parallel MATCH via errgroup, WHERE filtering, action dispatch (CREATE/RETURN/SET/DELETE), wired into HTTP handler (`query/`, `server/handler.go`, `server/http.go`)
 - 2026-10-26: Internal cluster traffic moved to gRPC (`proto/node.proto`, `rpcpb/`, `server/`, `gateway/`); client API stays HTTP
 - 2026-10-26: Module path renamed to `github.com/neo4g/neo4g` (`go.mod`, imports, `proto/node.proto`, docs)
+- 2026-10-26: Storage durability — persist B+Tree roots on split, force the WAL before data pages, log the header catalog, undo into the buffer pool, keep checkpoint history and monotonic LSNs, CRC torn tails (`storage/`)
