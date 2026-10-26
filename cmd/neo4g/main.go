@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -20,13 +21,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	serveErr := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			log.Fatalf("neo4g: server error: %v", err)
-		}
+		serveErr <- srv.ListenAndServe()
 	}()
 
-	<-ctx.Done()
+	var failed error
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		failed = err
+		if err != nil {
+			log.Printf("neo4g: server error: %v", err)
+		}
+		stop()
+	}
+
 	log.Println("neo4g: shutting down...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -37,4 +47,7 @@ func main() {
 	}
 
 	log.Println("neo4g: stopped")
+	if failed != nil {
+		os.Exit(1)
+	}
 }

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,16 +9,23 @@ import (
 
 // NodeState tracks the health and role of a single Neo4g node.
 type NodeState struct {
-	ID     string
-	Addr   string
-	Role   string // "primary" | "replica"
-	Alive  bool
-	LSN    uint64
-	LastOK time.Time
+	ID           string
+	Addr         string
+	Role         string // gateway assignment: "primary" | "replica" | "unknown"
+	ReportedRole string // last role the node reported for itself
+	Alive        bool
+	LSN          uint64 // contiguously applied primary LSN (primary: its tip)
+	LSNKnown     bool
+	Generation   uint64
+	Failures     int
+	LastOK       time.Time
 }
 
 // Cluster maintains the set of known nodes, which one is primary,
 // and a round-robin counter for distributing reads.
+//
+// The gateway is the only authority for who is primary. A node's self-reported
+// role is recorded and never adopted.
 type Cluster struct {
 	mu      sync.RWMutex
 	nodes   map[string]*NodeState
@@ -26,7 +34,7 @@ type Cluster struct {
 }
 
 // NewCluster builds a Cluster from the initial node list.
-// The first node that responds as primary (via heartbeat) will be elected.
+// Leadership is chosen by election, not by the first node that claims it.
 func NewCluster(nodes []NodeConfig) *Cluster {
 	c := &Cluster{
 		nodes: make(map[string]*NodeState, len(nodes)),
@@ -41,7 +49,8 @@ func NewCluster(nodes []NodeConfig) *Cluster {
 	return c
 }
 
-// SetPrimary marks a node as the primary and updates all other alive nodes to replica.
+// SetPrimary marks a node as the primary and updates all other nodes to replica.
+// Call this only after the previous primary has been fenced or is unreachable.
 func (c *Cluster) SetPrimary(nodeID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -55,7 +64,7 @@ func (c *Cluster) SetPrimary(nodeID string) {
 	}
 }
 
-// Primary returns the current primary node, or nil if none is known.
+// Primary returns the current primary node, or nil if none is known or it is down.
 func (c *Cluster) Primary() *NodeState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -77,22 +86,67 @@ func (c *Cluster) PrimaryID() string {
 	return c.primary
 }
 
-// UpdateHealth updates a node's health status from a heartbeat response.
-func (c *Cluster) UpdateHealth(nodeID string, alive bool, role string, lsn uint64) {
+// UpdateHealth records a successful heartbeat. A self-reported primary that is
+// not the gateway's current choice does not become primary.
+func (c *Cluster) UpdateHealth(nodeID string, alive bool, role string, lsn uint64, generation uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n, ok := c.nodes[nodeID]
 	if !ok {
 		return
 	}
-	n.Alive = alive
+	if !alive {
+		n.Alive = false
+		return
+	}
+	n.Alive = true
+	n.Failures = 0
+	n.LastOK = time.Now()
+	n.ReportedRole = role
 	n.LSN = lsn
-	if alive {
-		n.LastOK = time.Now()
-		n.Role = role
-		if role == "primary" && c.primary != nodeID {
-			c.primary = nodeID
-		}
+	n.LSNKnown = true
+	if generation > n.Generation {
+		n.Generation = generation
+	}
+	if c.primary == nodeID {
+		n.Role = "primary"
+	} else if c.primary != "" {
+		n.Role = "replica"
+	} else {
+		n.Role = "unknown"
+	}
+}
+
+// NoteFailure counts a missed heartbeat. The node is marked dead only after
+// threshold consecutive failures (derived from HeartbeatTimeout).
+func (c *Cluster) NoteFailure(nodeID string, threshold int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return
+	}
+	if threshold < 2 {
+		threshold = 2
+	}
+	n.Failures++
+	if n.Failures >= threshold {
+		n.Alive = false
+	}
+}
+
+// NoteRole records a role the gateway successfully assigned and the generation
+// used for that assignment.
+func (c *Cluster) NoteRole(nodeID, reported string, generation uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, ok := c.nodes[nodeID]
+	if !ok {
+		return
+	}
+	n.ReportedRole = reported
+	if generation > n.Generation {
+		n.Generation = generation
 	}
 }
 
@@ -106,6 +160,7 @@ func (c *Cluster) MarkDead(nodeID string) {
 }
 
 // IsPrimaryDead reports whether the current primary is marked dead.
+// No chosen primary counts as dead so startup runs an explicit election.
 func (c *Cluster) IsPrimaryDead() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -114,6 +169,37 @@ func (c *Cluster) IsPrimaryDead() bool {
 	}
 	n := c.nodes[c.primary]
 	return n == nil || !n.Alive
+}
+
+// ElectionCandidates returns alive nodes except the current primary.
+// ok is false when any of those nodes has no applied-LSN cursor yet.
+func (c *Cluster) ElectionCandidates() (nodes []NodeState, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []NodeState
+	for _, n := range c.nodes {
+		if !n.Alive || n.ID == c.primary {
+			continue
+		}
+		if !n.LSNKnown {
+			return nil, false
+		}
+		out = append(out, *n)
+	}
+	return out, true
+}
+
+// ReportedPrimaries returns alive nodes whose last self-report was primary.
+func (c *Cluster) ReportedPrimaries() []NodeState {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []NodeState
+	for _, n := range c.nodes {
+		if n.Alive && n.ReportedRole == "primary" {
+			out = append(out, *n)
+		}
+	}
+	return out
 }
 
 // AliveReplicas returns a copy of all alive replica NodeStates.
@@ -153,15 +239,29 @@ func (c *Cluster) HealthyNodes() []NodeState {
 	return out
 }
 
-// NextReadNode picks the next healthy node for a read query using round-robin.
-func (c *Cluster) NextReadNode() *NodeState {
-	healthy := c.HealthyNodes()
-	if len(healthy) == 0 {
-		return nil
+// ReadNode returns a replica whose applied LSN is at least minLSN.
+// If none qualifies, the primary is returned (possibly nil).
+func (c *Cluster) ReadNode(minLSN uint64) *NodeState {
+	c.mu.RLock()
+	var replicas []NodeState
+	for _, n := range c.nodes {
+		if n.Alive && n.ID != c.primary && n.LSNKnown && n.LSN >= minLSN {
+			replicas = append(replicas, *n)
+		}
 	}
+	c.mu.RUnlock()
+	if len(replicas) == 0 {
+		return c.Primary()
+	}
+	sort.Slice(replicas, func(i, j int) bool { return replicas[i].ID < replicas[j].ID })
 	idx := c.rrIndex.Add(1) - 1
-	pick := healthy[idx%uint64(len(healthy))]
+	pick := replicas[idx%uint64(len(replicas))]
 	return &pick
+}
+
+// NextReadNode picks any healthy replica, or the primary when no replica is up.
+func (c *Cluster) NextReadNode() *NodeState {
+	return c.ReadNode(0)
 }
 
 // NodeByID returns a copy of the node with the given ID, or nil.

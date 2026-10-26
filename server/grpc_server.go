@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/neo4g/neo4g/rpcpb"
@@ -20,8 +23,9 @@ type nodeService struct {
 	srv *Server
 }
 
-func (n *nodeService) Health(context.Context, *rpcpb.HealthRequest) (*rpcpb.HealthResponse, error) {
+func (n *nodeService) Health(ctx context.Context, _ *rpcpb.HealthRequest) (*rpcpb.HealthResponse, error) {
 	h := n.srv.healthView()
+	_ = grpc.SetHeader(ctx, metadata.Pairs(rpcpb.GenerationHeader, strconv.FormatUint(h.Generation, 10)))
 	return &rpcpb.HealthResponse{
 		Status:      h.Status,
 		NodeId:      h.NodeID,
@@ -31,9 +35,14 @@ func (n *nodeService) Health(context.Context, *rpcpb.HealthRequest) (*rpcpb.Heal
 	}, nil
 }
 
-func (n *nodeService) SetRole(_ context.Context, req *rpcpb.SetRoleRequest) (*rpcpb.SetRoleResponse, error) {
-	if err := n.srv.applyRole(req.GetRole(), req.GetPrimaryAddr()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+func (n *nodeService) SetRole(ctx context.Context, req *rpcpb.SetRoleRequest) (*rpcpb.SetRoleResponse, error) {
+	err := n.srv.applyRole(req.GetRole(), req.GetPrimaryAddr(), rpcpb.GenerationFromContext(ctx))
+	if err != nil {
+		code := codes.InvalidArgument
+		if errors.Is(err, errStaleGeneration) {
+			code = codes.FailedPrecondition
+		}
+		return nil, status.Error(code, err.Error())
 	}
 	return &rpcpb.SetRoleResponse{
 		Status: "ok",
@@ -76,6 +85,8 @@ func (n *nodeService) PullWAL(_ context.Context, req *rpcpb.PullWALRequest) (*rp
 			return nil, status.Error(codes.PermissionDenied, err.Error())
 		case errors.Is(err, errWALDisabled):
 			return nil, status.Error(codes.Unavailable, err.Error())
+		case errors.Is(err, errWALGap):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		default:
 			return nil, status.Errorf(codes.Internal, "%v", err)
 		}

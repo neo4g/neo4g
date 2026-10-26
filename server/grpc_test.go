@@ -98,7 +98,7 @@ func TestInternalGRPC(t *testing.T) {
 		t.Fatalf("SetRole invalid: code=%v err=%v", status.Code(err), err)
 	}
 
-	if _, err := client.SetRole(ctx, &rpcpb.SetRoleRequest{Role: "replica"}); err != nil {
+	if _, err := client.SetRole(ctx, &rpcpb.SetRoleRequest{Role: "replica", PrimaryAddr: srv.BoundGRPCAddr()}); err != nil {
 		t.Fatalf("SetRole replica: %v", err)
 	}
 	if srv.Role() != "replica" {
